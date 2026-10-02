@@ -135,9 +135,9 @@ fn is_new(key: &'static str, id: &str) -> bool {
 
 fn status_error(code: u16, unauthorised_hint: &str) -> String {
     match code {
-        401 => "Invalid API key (401)".into(),
+        401 => crate::i18n::t("Invalid API key (401)", "Chave de API inválida (401)").into(),
         403 => unauthorised_hint.into(),
-        _ => format!("API error {code}"),
+        _ => if crate::i18n::pt() { format!("Erro da API {code}") } else { format!("API error {code}") },
     }
 }
 
@@ -180,7 +180,7 @@ async fn poll_stripe(app: AppHandle) {
             emit(&app, IntegrationUpdate {
                 id: "integration_stripe",
                 data: json!({}),
-                error: Some(status_error(code, "Use a secret key (sk_live_… not pk_live_…)")),
+                error: Some(status_error(code, crate::i18n::t("Use a secret key (sk_live_… not pk_live_…)", "Use uma chave secreta (sk_live_…, não pk_live_…)"))),
                 event: None,
             });
             return;
@@ -189,7 +189,7 @@ async fn poll_stripe(app: AppHandle) {
             emit(&app, IntegrationUpdate {
                 id: "integration_stripe",
                 data: json!({}),
-                error: Some(format!("No connection: {e}")),
+                error: Some(if crate::i18n::pt() { format!("Sem conexão: {e}") } else { format!("No connection: {e}") }),
                 event: None,
             });
             return;
@@ -280,7 +280,7 @@ async fn poll_github(app: AppHandle) {
         emit(&app, IntegrationUpdate {
             id: "integration_github",
             data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Token lacks the needed scope")),
+            error: Some(status_error(response.status().as_u16(), crate::i18n::t("Token lacks the needed scope", "O token não tem o escopo necessário"))),
             event: None,
         });
         return;
@@ -338,7 +338,7 @@ async fn poll_vercel(app: AppHandle) {
         emit(&app, IntegrationUpdate {
             id: "integration_vercel",
             data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Token lacks access")),
+            error: Some(status_error(response.status().as_u16(), crate::i18n::t("Token lacks access", "O token não tem acesso"))),
             event: None,
         });
         return;
@@ -410,7 +410,7 @@ async fn poll_resend(app: AppHandle) {
         emit(&app, IntegrationUpdate {
             id: "integration_resend",
             data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Key lacks access")),
+            error: Some(status_error(response.status().as_u16(), crate::i18n::t("Key lacks access", "A chave não tem acesso"))),
             event: None,
         });
         return;
@@ -472,7 +472,7 @@ async fn poll_notion(app: AppHandle) {
         emit(&app, IntegrationUpdate {
             id: "integration_notion",
             data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Integration lacks access")),
+            error: Some(status_error(response.status().as_u16(), crate::i18n::t("Integration lacks access", "A integração não tem acesso"))),
             event: None,
         });
         return;
@@ -559,7 +559,7 @@ async fn poll_calcom(app: AppHandle) {
         emit(&app, IntegrationUpdate {
             id: "integration_calcom",
             data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Key lacks access")),
+            error: Some(status_error(response.status().as_u16(), crate::i18n::t("Key lacks access", "A chave não tem acesso"))),
             event: None,
         });
         return;

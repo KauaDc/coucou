@@ -7,8 +7,10 @@ import { State, type Settings } from "./core/state";
 import { Island } from "./island/island";
 import { registerHookHandlers } from "./island/hooks";
 import { registerIntegrationHandlers, refreshConfigured } from "./island/integrations";
+import { applyDocumentLang } from "./i18n";
 
 async function main() {
+  applyDocumentLang();
   const root = document.getElementById("root");
   if (!root) return;
 

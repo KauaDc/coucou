@@ -7,6 +7,7 @@ import { Bridge, onEvent } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import type { Island } from "./island";
+import { t } from "../i18n";
 
 const CLAUDE_ID = "integration_claude";
 
@@ -41,22 +42,22 @@ function lastPathComponent(p: string): string {
   return idx >= 0 ? cleaned.slice(idx + 1) : cleaned;
 }
 
-/** frenchStep() — same labels as the macOS app. */
+/** Step labels for the ticker, in the interface language. */
 const TOOL_LABELS: Record<string, string> = {
-  Bash: "Exécute",
-  Read: "Lit",
-  Write: "Écrit",
-  Edit: "Modifie",
-  Glob: "Cherche",
-  Grep: "Recherche",
-  WebSearch: "Recherche web",
-  WebFetch: "Récupère",
-  TodoWrite: "Tâches",
-  Task: "Agent",
-  LS: "Liste",
-  MultiEdit: "Modifie",
-  NotebookEdit: "Notebook",
-  PowerShell: "Exécute",
+  Bash: t("tool.Bash"),
+  Read: t("tool.Read"),
+  Write: t("tool.Write"),
+  Edit: t("tool.Edit"),
+  Glob: t("tool.Glob"),
+  Grep: t("tool.Grep"),
+  WebSearch: t("tool.WebSearch"),
+  WebFetch: t("tool.WebFetch"),
+  TodoWrite: t("tool.TodoWrite"),
+  Task: t("tool.Task"),
+  LS: t("tool.LS"),
+  MultiEdit: t("tool.MultiEdit"),
+  NotebookEdit: t("tool.NotebookEdit"),
+  PowerShell: t("tool.PowerShell"),
 };
 
 function stepLabel(tool: string, input: Record<string, unknown>): string {
@@ -133,7 +134,7 @@ function handleHook(island: Island, payload: HookPayload) {
   const name = payload.hook_event_name ?? "";
   const cwd = payload.cwd ?? "";
   const raw = lastPathComponent(cwd);
-  const projectName = aliasProjectName(raw || "Session");
+  const projectName = aliasProjectName(raw || t("step.session"));
   const focused = State.focusId === CLAUDE_ID;
 
   /** Alerts force the island open; work events only reveal the compact island. */
@@ -167,7 +168,7 @@ function handleHook(island: Island, payload: HookPayload) {
     case "PreToolUse": {
       upsert(projectName, cwd);
       State.updateTask(CLAUDE_ID, "working");
-      const tool = payload.tool_name ?? "Tool";
+      const tool = payload.tool_name ?? t("step.tool");
       State.appendStep(CLAUDE_ID, stepLabel(tool, payload.tool_input ?? {}));
       surface("overview", false);
       break;
@@ -179,7 +180,7 @@ function handleHook(island: Island, payload: HookPayload) {
 
     case "PostToolUseFailure":
       State.updateTask(CLAUDE_ID, "working");
-      State.appendStep(CLAUDE_ID, "⚠ failed");
+      State.appendStep(CLAUDE_ID, t("step.failed"));
       break;
 
     case "Notification": {
@@ -220,11 +221,11 @@ function handleHook(island: Island, payload: HookPayload) {
       break;
 
     case "SubagentStart":
-      State.appendStep(CLAUDE_ID, "+ subagent");
+      State.appendStep(CLAUDE_ID, t("step.subagent"));
       break;
 
     case "SubagentStop":
-      State.appendStep(CLAUDE_ID, "• subagent done");
+      State.appendStep(CLAUDE_ID, t("step.subagentDone"));
       break;
 
     case "PermissionRequest": {
@@ -238,7 +239,7 @@ function handleHook(island: Island, payload: HookPayload) {
       }
       upsert(projectName, cwd);
       if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
-      const tool = payload.tool_name ?? "Tool";
+      const tool = payload.tool_name ?? t("step.tool");
       const input = payload.tool_input ?? {};
       State.pendingApproval = {
         requestId,

@@ -81,7 +81,10 @@ fn read_settings() -> Result<Value, String> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
         // A lock, a permission problem, a bad drive: all of them mean we do not
         // know what is in there, and not knowing is not the same as empty.
-        Err(err) => Err(format!("Can't read {}: {err}", path.display())),
+        Err(err) => {
+            let path = path.display();
+            Err(if crate::i18n::pt() { format!("Não foi possível ler {path}: {err}") } else { format!("Can't read {path}: {err}") })
+        }
     }
 }
 
@@ -97,10 +100,12 @@ fn parse_settings(bytes: &[u8], path: &str) -> Result<Value, String> {
     }
     match serde_json::from_slice::<Value>(text) {
         Ok(v) if v.is_object() => Ok(v),
-        Ok(_) => Err(format!("{path} isn't a JSON object — Coucou won't touch it.")),
-        Err(err) => Err(format!(
-            "{path} isn't valid JSON ({err}). Fix or move it, then try again — Coucou won't overwrite it."
-        )),
+        Ok(_) => Err(if crate::i18n::pt() { format!("{path} não é um objeto JSON — o Coucou não vai mexer nele.") } else { format!("{path} isn't a JSON object — Coucou won't touch it.") }),
+        Err(err) => Err(if crate::i18n::pt() {
+            format!("{path} não é um JSON válido ({err}). Corrija ou mova o arquivo e tente de novo — o Coucou não vai sobrescrevê-lo.")
+        } else {
+            format!("{path} isn't valid JSON ({err}). Fix or move it, then try again — Coucou won't overwrite it.")
+        }),
     }
 }
 
@@ -277,15 +282,17 @@ pub fn write(install: bool, fingerprint: &str) -> Result<String, String> {
     // anything at all.
     let current = read_settings()?;
     if current_fingerprint() != fingerprint {
-        return Err(format!(
-            "{} changed since the preview. Nothing was written — review the new diff.",
-            path.display()
-        ));
+        let path = path.display();
+        return Err(if crate::i18n::pt() {
+            format!("{path} mudou desde a prévia. Nada foi gravado — revise o novo diff.")
+        } else {
+            format!("{path} changed since the preview. Nothing was written — review the new diff.")
+        });
     }
 
     let backup = backup_path();
     if path.exists() {
-        std::fs::copy(&path, &backup).map_err(|e| format!("backup failed: {e}"))?;
+        std::fs::copy(&path, &backup).map_err(|e| if crate::i18n::pt() { format!("falha no backup: {e}") } else { format!("backup failed: {e}") })?;
     }
 
     let next = if install { merged(&current) } else { without_ours(&current) };
@@ -295,10 +302,10 @@ pub fn write(install: bool, fingerprint: &str) -> Result<String, String> {
     // Write beside the target and rename over it: a crash or a full disk leaves
     // the original settings.json intact rather than half a file.
     let temp = path.with_extension(format!("json.coucou-{}", std::process::id()));
-    std::fs::write(&temp, text.as_bytes()).map_err(|e| format!("write failed: {e}"))?;
+    std::fs::write(&temp, text.as_bytes()).map_err(|e| if crate::i18n::pt() { format!("falha ao gravar: {e}") } else { format!("write failed: {e}") })?;
     if let Err(err) = std::fs::rename(&temp, &path) {
         let _ = std::fs::remove_file(&temp);
-        return Err(format!("write failed: {err}"));
+        return Err(if crate::i18n::pt() { format!("falha ao gravar: {err}") } else { format!("write failed: {err}") });
     }
     Ok(backup.to_string_lossy().to_string())
 }
@@ -410,7 +417,7 @@ fn unified_diff(before: &str, after: &str) -> String {
         .map(|(i, _)| i)
         .collect();
     if changed.is_empty() {
-        return "No change.".into();
+        return crate::i18n::t("No change.", "Nenhuma mudança.").into();
     }
     let mut keep = vec![false; out.len()];
     for idx in changed {
