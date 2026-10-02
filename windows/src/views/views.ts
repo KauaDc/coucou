@@ -5,7 +5,7 @@
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
-import { State, type AgentTask } from "../core/state";
+import { State, providerLabel, type AgentTask } from "../core/state";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
@@ -272,6 +272,8 @@ function lighten(hex: string, amount: number): string {
 // ── Empty ─────────────────────────────────────────────────────────────────────
 
 function buildEmpty(actions: ViewActions): ViewHost {
+  const ask = btn("", "primary", () => actions.setView("prompt"));
+  const askLabel = ask.firstElementChild as HTMLElement;
   const body = h(
     "div",
     { class: "stack", style: "padding:0 18px 0 118px;flex-direction:row;align-items:center;gap:16px" },
@@ -282,9 +284,16 @@ function buildEmpty(actions: ViewActions): ViewHost {
       h("div", { class: "sub", text: t("empty.sub") }),
     ),
     h("div", { class: "grow" }),
-    btn(t("empty.ask"), "primary", () => actions.setView("prompt")),
+    ask,
   );
-  return { el: h("div", { class: "view" }, card(null, body)), sync() {} };
+  return {
+    el: h("div", { class: "view" }, card(null, body)),
+    sync() {
+      // The provider can change from the settings window while the island runs.
+      const label = t("empty.ask", { provider: providerLabel(State.settings.chatProvider) });
+      if (askLabel.textContent !== label) askLabel.textContent = label;
+    },
+  };
 }
 
 // ── Approval ──────────────────────────────────────────────────────────────────
@@ -472,14 +481,22 @@ function buildSettings(actions: ViewActions): ViewHost {
 
 // ── Placeholders filled in later stages ───────────────────────────────────────
 
-function buildPlaceholder(title: string, sub: string): ViewHost {
+function buildPlaceholder(title: string | (() => string), sub: string): ViewHost {
+  const titleEl = h("div", { class: "title", text: typeof title === "string" ? title : title() });
   const body = h(
     "div",
     { class: "stack", style: "padding:0 18px 0 118px" },
-    h("div", { class: "title", text: title }),
+    titleEl,
     h("div", { class: "sub", text: sub }),
   );
-  return { el: h("div", { class: "view" }, card(null, body)), sync() {} };
+  return {
+    el: h("div", { class: "view" }, card(null, body)),
+    sync() {
+      if (typeof title === "string") return;
+      const text = title();
+      if (titleEl.textContent !== text) titleEl.textContent = text;
+    },
+  };
 }
 
 // ── Registry ──────────────────────────────────────────────────────────────────
@@ -504,7 +521,9 @@ export function buildViews(
   map.set("choose", buildChoose(actions));
   // Not in the Windows v1: sending a file by email, window attach + web result.
   map.set("mail", buildPlaceholder(t("placeholder.mail"), ""));
-  map.set("searching", buildPlaceholder(t("placeholder.searching"), ""));
+  map.set("searching", buildPlaceholder(
+    () => t("placeholder.searching", { provider: providerLabel(State.settings.chatProvider) }), "",
+  ));
   map.set("result", buildPlaceholder(t("placeholder.result"), ""));
   return map;
 }

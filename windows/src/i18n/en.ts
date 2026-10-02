@@ -15,7 +15,7 @@ export const en = {
   // Empty
   "empty.title": "Nothing running right now.",
   "empty.sub": "Drop a file or window, or ask me anything.",
-  "empty.ask": "Ask Claude",
+  "empty.ask": "Ask {provider}",
 
   // Approval
   "approval.who": "needs permission",
@@ -51,7 +51,7 @@ export const en = {
 
   // Placeholders
   "placeholder.mail": "Sending by email isn't in this version.",
-  "placeholder.searching": "Claude is searching…",
+  "placeholder.searching": "{provider} is searching…",
   "placeholder.result": "Result",
 
   // Chat
@@ -166,6 +166,8 @@ export const en = {
   "settings.couldNotSave": "Could not save: {err}",
   "settings.api.removed": "Key removed.",
   "settings.couldNotRemove": "Could not remove: {err}",
+  "settings.chat.title": "Chat",
+  "settings.chat.provider": "Provider",
   "settings.api.key": "API key",
   "settings.api.model": "Model",
   "settings.int.title": "Integrations",

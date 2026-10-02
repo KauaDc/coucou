@@ -70,7 +70,9 @@ It works from any terminal — Windows Terminal, PowerShell, VS Code, Git Bash.
 
 ## Chat and keys
 
-**Settings… → Claude** takes your Anthropic API key. Keys live in the **Windows
+**Settings… → Chat** picks the provider — **Claude** (Anthropic API key) or
+**Gemini** (Google AI Studio key) — and its model. Each provider keeps its own
+key; switching provider starts a new conversation. Keys live in the **Windows
 Credential Manager**, never on disk and never in the interface — the island can
 only ask whether a key exists. Same for every integration key.
 

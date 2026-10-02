@@ -90,8 +90,19 @@ export interface Settings {
   screen: "primary" | "cursor";
   autostart: boolean;
   hooksInstalled: boolean;
+  /** Which API the chat talks to. */
+  chatProvider: ChatProvider;
   /** Claude model used by the chat. */
   model: string;
+  /** Gemini model used by the chat. */
+  geminiModel: string;
+}
+
+export type ChatProvider = "anthropic" | "gemini";
+
+/** Short name of the chat provider, as shown in the island ("Ask Gemini"). */
+export function providerLabel(provider: ChatProvider): string {
+  return provider === "gemini" ? "Gemini" : "Claude";
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -105,7 +116,9 @@ export const DEFAULT_SETTINGS: Settings = {
   screen: "primary",
   autostart: false,
   hooksInstalled: false,
+  chatProvider: "anthropic",
   model: "claude-opus-5",
+  geminiModel: "gemini-3.8-flash",
 };
 
 type Listener = () => void;

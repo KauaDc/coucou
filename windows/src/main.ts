@@ -56,6 +56,9 @@ async function main() {
 
   // The settings window writes preferences; apply them here without a restart.
   await onEvent<Settings>("settings-changed", (s) => {
+    // The Rust side already dropped its history; drop the bubbles too, since
+    // the new provider cannot continue the old conversation.
+    if (s.chatProvider !== State.settings.chatProvider) State.chatHistory = [];
     State.settings = { ...State.settings, ...s };
     island.applySettings();
     State.loadIntegrationTasks();

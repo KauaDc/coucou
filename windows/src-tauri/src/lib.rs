@@ -1,7 +1,9 @@
 // Coucou for Windows — app wiring and the commands the island calls.
 
+mod chat;
 mod claude;
 mod files;
+mod gemini;
 mod hooks;
 mod i18n;
 mod integrations;
@@ -22,7 +24,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 
-use claude::{Chat, ChatContext, ChatReply};
+use chat::{Chat, ChatContext, ChatReply};
 use files::DroppedFile;
 use hooks::{HookPreview, HookStatus};
 use island::{PollGate, ScreenInfo};
@@ -61,14 +63,20 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
 }
 
 #[tauri::command]
-fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
-    let (screen_changed, autostart_changed) = {
+fn save_settings(app: AppHandle, shared: State<Shared>, chat: State<Chat>, settings: Settings) {
+    let (screen_changed, autostart_changed, provider_changed) = {
         let mut current = shared.settings.lock().unwrap();
         let screen_changed = current.screen != settings.screen;
         let autostart_changed = current.autostart != settings.autostart;
+        let provider_changed = current.chat_provider != settings.chat_provider;
         *current = settings.clone();
-        (screen_changed, autostart_changed)
+        (screen_changed, autostart_changed, provider_changed)
     };
+    // Claude and Gemini histories are not interchangeable: start over. The island
+    // clears its own copy when it sees the new provider in settings-changed.
+    if provider_changed {
+        chat.reset();
+    }
     if let Err(err) = settings::save(&settings) {
         eprintln!("[coucou] could not save settings: {err}");
     }
@@ -241,7 +249,8 @@ fn approval_decline(app: AppHandle, request_id: String) {
 
 // ── Chat, files and secrets ───────────────────────────────────────────────────
 
-/// One chat turn. The API key and any file bytes stay on the Rust side.
+/// One chat turn, on the provider picked in the settings. The API key and any
+/// file bytes stay on the Rust side.
 #[tauri::command]
 async fn chat_send(
     shared: State<'_, Shared>,
@@ -249,8 +258,8 @@ async fn chat_send(
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
-    let model = shared.settings.lock().unwrap().model.clone();
-    claude::send(&chat, &model, query, context).await
+    let settings = shared.settings.lock().unwrap().clone();
+    chat::send(&chat, &settings, query, context).await
 }
 
 #[tauri::command]

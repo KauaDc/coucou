@@ -16,7 +16,7 @@ export const ptBR: Record<keyof typeof en, string> = {
   // Empty
   "empty.title": "Nada rodando agora.",
   "empty.sub": "Solte um arquivo ou janela, ou me pergunte algo.",
-  "empty.ask": "Perguntar ao Claude",
+  "empty.ask": "Perguntar ao {provider}",
 
   // Approval
   "approval.who": "pede permissão",
@@ -52,7 +52,7 @@ export const ptBR: Record<keyof typeof en, string> = {
 
   // Placeholders
   "placeholder.mail": "Enviar por e-mail não está nesta versão.",
-  "placeholder.searching": "O Claude está pesquisando…",
+  "placeholder.searching": "O {provider} está pesquisando…",
   "placeholder.result": "Resultado",
 
   // Chat
@@ -167,6 +167,8 @@ export const ptBR: Record<keyof typeof en, string> = {
   "settings.couldNotSave": "Não foi possível salvar: {err}",
   "settings.api.removed": "Chave removida.",
   "settings.couldNotRemove": "Não foi possível remover: {err}",
+  "settings.chat.title": "Chat",
+  "settings.chat.provider": "Provedor",
   "settings.api.key": "Chave da API",
   "settings.api.model": "Modelo",
   "settings.int.title": "Integrações",

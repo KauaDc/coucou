@@ -102,6 +102,7 @@ Click the Coucou icon in the menu bar (macOS) or in the system tray (Windows) â†
 |---|---|---|
 | **Claude Code hooks** | live sessions and approvals | **Install hooks** â€” Coucou backs up `~/.claude/settings.json`, merges its hooks and shows you the diff before writing anything |
 | **Anthropic API key** | chat and questions about files | Keychain / Windows Credential Manager |
+| **Gemini API key** (Windows, optional) | the same chat, if you pick Gemini as provider | Windows Credential Manager |
 | Stripe, n8n, GitHub, Vercel, Resend, Notion, Cal.com | the integration pills | Keychain / Windows Credential Manager, all optional |
 
 If Coucou isn't running, the hook exits immediately: **Claude Code is never blocked.**

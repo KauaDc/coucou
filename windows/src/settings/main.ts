@@ -4,7 +4,7 @@
 
 import "./settings.css";
 import { Bridge, onEvent, type HookStatus } from "../core/bridge";
-import { DEFAULT_SETTINGS, type Settings } from "../core/state";
+import { DEFAULT_SETTINGS, type ChatProvider, type Settings } from "../core/state";
 import { h, clear } from "../views/dom";
 import { t, applyDocumentLang } from "../i18n";
 
@@ -172,21 +172,55 @@ function claudeSection(status: HookStatus): HTMLElement {
   return section;
 }
 
-// ── Claude API section ────────────────────────────────────────────────────────
+// ── Chat section ──────────────────────────────────────────────────────────────
 
-const MODELS: [string, string][] = [
-  ["claude-opus-5", "Claude Opus 5"],
-  ["claude-sonnet-5", "Claude Sonnet 5"],
-  ["claude-haiku-4-5", "Claude Haiku 4.5"],
-];
+interface ProviderDef {
+  label: string;
+  key: string;
+  placeholder: string;
+  /** Settings field holding this provider's model. */
+  modelField: "model" | "geminiModel";
+  models: [string, string][];
+}
 
-function apiSection(hasKey: boolean): HTMLElement {
-  const dot = statusDot(hasKey);
-  const state = h("span", { class: "hint", text: hasKey ? t("settings.api.saved") : t("settings.api.none") });
+const PROVIDERS: Record<ChatProvider, ProviderDef> = {
+  anthropic: {
+    label: "Claude (Anthropic)",
+    key: "anthropic-api-key",
+    placeholder: "sk-ant-...",
+    modelField: "model",
+    models: [
+      ["claude-opus-5", "Claude Opus 5"],
+      ["claude-sonnet-5", "Claude Sonnet 5"],
+      ["claude-haiku-4-5", "Claude Haiku 4.5"],
+    ],
+  },
+  gemini: {
+    label: "Gemini (Google)",
+    key: "gemini-api-key",
+    placeholder: "AIza...",
+    modelField: "geminiModel",
+    // From ai.google.dev/gemini-api/docs/models (2026-10-02). The 2.5 series is
+    // closed to new users, so it is left out.
+    models: [
+      ["gemini-3.8-flash", "Gemini 3.8 Flash"],
+      ["gemini-3.7-flash", "Gemini 3.7 Flash"],
+      ["gemini-3.5-flash-lite", "Gemini 3.5 Flash-Lite"],
+      ["gemini-3.1-pro-preview", "Gemini 3.1 Pro (preview)"],
+    ],
+  },
+};
+
+function chatSection(): HTMLElement {
+  const dot = statusDot(false);
+  const state = h("span", { class: "hint" });
+
+  const provider = h("select", {}) as HTMLSelectElement;
+  for (const [id, def] of Object.entries(PROVIDERS)) provider.append(h("option", { value: id, text: def.label }));
+  provider.value = settings.chatProvider;
 
   const field = h("input", {
     type: "password",
-    placeholder: hasKey ? `••••••••••••  ${t("settings.api.stored")}` : "sk-ant-...",
     style: "flex:1 1 auto;min-width:0",
     autocomplete: "off",
     spellcheck: "false",
@@ -195,23 +229,50 @@ function apiSection(hasKey: boolean): HTMLElement {
   const saveBtn = h("button", { class: "primary", text: t("settings.api.save") });
   const clearBtn = h("button", { class: "danger", text: t("settings.api.remove") });
   const feedback = h("div", {});
+  const model = h("select", {}) as HTMLSelectElement;
+
+  const current = () => PROVIDERS[settings.chatProvider] ?? PROVIDERS.anthropic;
 
   async function refresh() {
-    const present = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
+    const def = current();
+    const present = (await Bridge.secretPresent(def.key)) ?? false;
+    if (def !== current()) return; // the provider changed while we were asking
     dot.style.background = present ? "#22c55e" : "#f4505e";
-    state.textContent = present
-      ? t("settings.api.saved")
-      : t("settings.api.none");
-    field.placeholder = present ? `••••••••••••  ${t("settings.api.stored")}` : "sk-ant-...";
+    state.textContent = present ? t("settings.api.saved") : t("settings.api.none");
+    field.placeholder = present ? `••••••••••••  ${t("settings.api.stored")}` : def.placeholder;
     clearBtn.style.display = present ? "" : "none";
   }
+
+  function fillModels() {
+    const def = current();
+    const chosen = settings[def.modelField];
+    clear(model);
+    for (const [id, label] of def.models) model.append(h("option", { value: id, text: label }));
+    // A model saved by hand or by an older build stays selectable.
+    if (!def.models.some(([id]) => id === chosen)) model.append(h("option", { value: chosen, text: chosen }));
+    model.value = chosen;
+  }
+
+  provider.addEventListener("change", () => {
+    settings.chatProvider = provider.value as ChatProvider;
+    field.value = "";
+    clear(feedback);
+    fillModels();
+    void refresh();
+    void save();
+  });
+
+  model.addEventListener("change", () => {
+    settings[current().modelField] = model.value;
+    void save();
+  });
 
   saveBtn.addEventListener("click", async () => {
     const value = field.value.trim();
     if (!value) return;
     clear(feedback);
     try {
-      await Bridge.secretSet("anthropic-api-key", value);
+      await Bridge.secretSet(current().key, value);
       field.value = "";
       feedback.append(h("div", { class: "notice ok", text: t("settings.api.savedOk") }));
       await refresh();
@@ -223,7 +284,7 @@ function apiSection(hasKey: boolean): HTMLElement {
   clearBtn.addEventListener("click", async () => {
     clear(feedback);
     try {
-      await Bridge.secretClear("anthropic-api-key");
+      await Bridge.secretClear(current().key);
       feedback.append(h("div", { class: "notice ok", text: t("settings.api.removed") }));
       await refresh();
     } catch (err) {
@@ -231,24 +292,16 @@ function apiSection(hasKey: boolean): HTMLElement {
     }
   });
 
-  const model = h("select", {}) as HTMLSelectElement;
-  for (const [id, label] of MODELS) model.append(h("option", { value: id, text: label }));
-  if (!MODELS.some(([id]) => id === settings.model)) {
-    model.append(h("option", { value: settings.model, text: settings.model }));
-  }
-  model.value = settings.model;
-  model.addEventListener("change", () => {
-    settings.model = model.value;
-    void save();
-  });
-
-  clearBtn.style.display = hasKey ? "" : "none";
+  clearBtn.style.display = "none";
+  fillModels();
+  void refresh();
 
   return h(
     "section",
     {},
-    h("h2", {}, dot, h("span", { text: "Claude" })),
+    h("h2", {}, dot, h("span", { text: t("settings.chat.title") })),
     state,
+    h("div", { class: "row" }, h("label", { text: t("settings.chat.provider") }), provider),
     h("div", { class: "row" }, h("label", { text: t("settings.api.key") }), field, saveBtn, clearBtn),
     h("div", { class: "row" }, h("label", { text: t("settings.api.model") }), model),
     feedback,
@@ -431,8 +484,6 @@ async function main() {
     installed: false, settingsPath: "", hookPath: "", hookReady: false,
   };
 
-  const hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
-
   const keys = [
     "stripe-api-key", "github-token", "vercel-token",
     "n8n-url", "n8n-api-key", "resend-api-key", "notion-api-key", "calcom-api-key",
@@ -444,7 +495,7 @@ async function main() {
   root.append(
     h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
     claudeSection(status),
-    apiSection(hasKey),
+    chatSection(),
     integrationsSection(present),
     generalSection(),
     h("div", {
