@@ -22,11 +22,20 @@ export const ptBR: Record<keyof typeof en, string> = {
   "approval.who": "pede permissão",
   "approval.deny": "Negar",
   "approval.allow": "Permitir",
+  "approval.terminal": "No terminal",
 
   // Question
   "question.who": "O Claude Code tem uma pergunta",
   "question.fallback": "O Claude precisa de uma resposta.",
-  "question.sub": "Responda no terminal — o Coucou ainda não responde por você.",
+  "question.sub": "Responda no terminal.",
+  "question.progress": "{n} de {total}",
+  "question.multiHint": "Escolha uma ou mais",
+  "question.next": "Próxima",
+  "question.send": "Enviar",
+  "question.back": "Voltar",
+  "question.other": "Outra…",
+  "question.otherPlaceholder": "Digite sua resposta e tecle Enter",
+  "question.terminal": "No terminal",
 
   // Error
   "error.workflowStopped": "Workflow parado.",
@@ -165,6 +174,8 @@ export const ptBR: Record<keyof typeof en, string> = {
   "settings.hooks.install": "Instalar hooks…",
   "settings.hooks.relayNotInstalled": "O relay ainda não está instalado.",
   "settings.hooks.uninstall": "Desinstalar hooks…",
+  "settings.hooks.outdated":
+    "Estes hooks vêm de uma versão antiga do Coucou: o Claude Code descarta pedidos de permissão e perguntas depois de 2 minutos. Reinstale para que eles fiquem na ilha até você responder.",
   "settings.back": "Voltar",
   "settings.hooks.previewInstall":
     "Isto é exatamente o que vai mudar no seu settings.json. Seus próprios hooks não são tocados.",

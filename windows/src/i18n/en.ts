@@ -21,11 +21,20 @@ export const en = {
   "approval.who": "needs permission",
   "approval.deny": "Deny",
   "approval.allow": "Allow",
+  "approval.terminal": "In the terminal",
 
   // Question
   "question.who": "Claude Code is asking a question",
   "question.fallback": "Claude needs an answer.",
-  "question.sub": "Answer in your terminal — Coucou can't reply for you yet.",
+  "question.sub": "Answer it in your terminal.",
+  "question.progress": "{n} of {total}",
+  "question.multiHint": "Pick one or more",
+  "question.next": "Next",
+  "question.send": "Send",
+  "question.back": "Back",
+  "question.other": "Other…",
+  "question.otherPlaceholder": "Type your answer and press Enter",
+  "question.terminal": "In the terminal",
 
   // Error
   "error.workflowStopped": "Workflow stopped.",
@@ -164,6 +173,8 @@ export const en = {
   "settings.hooks.install": "Install hooks…",
   "settings.hooks.relayNotInstalled": "The relay isn't installed yet.",
   "settings.hooks.uninstall": "Uninstall hooks…",
+  "settings.hooks.outdated":
+    "These hooks come from an older version of Coucou: Claude Code drops permission requests and questions after 2 minutes. Reinstall them so they stay on the island until you answer.",
   "settings.back": "Back",
   "settings.hooks.previewInstall":
     "This is exactly what will change in your settings.json. Your own hooks are left untouched.",

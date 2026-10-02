@@ -111,6 +111,12 @@ export class Island {
       setFocus: (id) => {
         State.setFocus(id);
         Sound.play("blip");
+        // A card waiting on this agent comes back with it: without a timer, the
+        // badge is otherwise the only way back to it.
+        if (id === "integration_claude") {
+          if (State.pendingQuestion) this.setView("question");
+          else if (State.pendingApproval) this.setView("approval");
+        }
       },
       openTerminal: () => {
         const cwd = State.focusTask?.sessionCwd ?? null;
@@ -142,12 +148,35 @@ export class Island {
         if (!req) return;
         Sound.play(d === "deny" ? "blip" : "approve");
         void Bridge.approvalDecision(req.requestId, d);
-        State.pendingApproval = null;
-        State.isPinned = false;
-        this.fsm.pinned = false;
-        State.updateTask("integration_claude", "working");
-        State.setPillBadge("integration_claude", null);
-        this.setView(State.defaultView());
+        this.releaseCard(req.requestId);
+      },
+      answerInTerminal: () => this.answerInTerminal(),
+      questionPick: (i) => this.questionPick(i),
+      questionNext: () => this.questionNext(),
+      questionBack: () => {
+        const q = State.pendingQuestion;
+        if (!q || q.index === 0) return;
+        Sound.play("blip");
+        q.index -= 1;
+        q.typing = false;
+        this.questionChanged();
+      },
+      questionOther: (open) => {
+        const q = State.pendingQuestion;
+        if (!q) return;
+        q.typing = open;
+        void Bridge.focusWindow(open);
+        if (open) window.setTimeout(() => this.views.get("question")?.focus?.(), 60);
+        State.notify();
+      },
+      questionCustom: (text) => {
+        const q = State.pendingQuestion;
+        if (!q || !text.trim()) return;
+        q.custom[q.index] = text.trim();
+        q.picked[q.index] = [];
+        q.typing = false;
+        void Bridge.focusWindow(false);
+        this.questionNext();
       },
       toggleSound: () => {
         State.settings.soundEnabled = !State.settings.soundEnabled;
@@ -341,6 +370,82 @@ export class Island {
     this.fsm.pinned = false;
   }
 
+  /**
+   * The approval or question card `requestId` is settled — answered here, handed
+   * to the terminal, or abandoned by the relay. Any other id is ignored, so a late
+   * cancel can never close the card that replaced it.
+   */
+  releaseCard(requestId: string) {
+    const approval = State.pendingApproval?.requestId === requestId;
+    const question = State.pendingQuestion?.requestId === requestId;
+    if (!approval && !question) return;
+    if (State.pendingQuestion?.typing) void Bridge.focusWindow(false);
+    State.pendingApproval = null;
+    State.pendingQuestion = null;
+    State.isPinned = false;
+    this.fsm.pinned = false;
+    State.updateTask("integration_claude", "working");
+    State.setPillBadge("integration_claude", null);
+    if (State.view === "approval" || State.view === "question") this.setView(State.defaultView());
+    State.notify();
+  }
+
+  /** "In the terminal": Claude Code's own prompt is already up there. */
+  private answerInTerminal() {
+    const id = State.pendingQuestion?.requestId ?? State.pendingApproval?.requestId;
+    if (!id) return;
+    Sound.play("blip");
+    void Bridge.approvalDecline(id);
+    this.releaseCard(id);
+  }
+
+  /** A click on option `i` of the question on screen. */
+  private questionPick(i: number) {
+    const q = State.pendingQuestion;
+    const current = q?.questions[q.index];
+    if (!q || !current || i < 0 || i >= current.options.length) return;
+    q.custom[q.index] = null;
+    if (current.multiSelect) {
+      const picked = q.picked[q.index];
+      q.picked[q.index] = picked.includes(i) ? picked.filter((x) => x !== i) : [...picked, i].sort();
+      Sound.play("blip");
+      State.notify();
+      return;
+    }
+    q.picked[q.index] = [i];
+    this.questionNext();
+  }
+
+  /** Next question, or — after the last one — the answers go to Claude Code. */
+  private questionNext() {
+    const q = State.pendingQuestion;
+    if (!q) return;
+    const answered = (k: number) => q.custom[k] != null || q.picked[k].length > 0;
+    if (!answered(q.index)) return;
+    if (q.index < q.questions.length - 1) {
+      Sound.play("blip");
+      q.index += 1;
+      this.questionChanged();
+      return;
+    }
+    if (!q.questions.every((_, k) => answered(k))) return;
+    const answers: Record<string, string> = {};
+    q.questions.forEach((question, k) => {
+      answers[question.question] =
+        q.custom[k] ?? q.picked[k].map((i) => question.options[i].label).join(", ");
+    });
+    void Bridge.log(`answer req=${q.requestId} ${q.questions.length} question(s)`);
+    Sound.play("approve");
+    void Bridge.questionAnswer(q.requestId, answers);
+    this.releaseCard(q.requestId);
+  }
+
+  /** Another question is on screen; its option count sets the card height. */
+  private questionChanged() {
+    State.notify();
+    if (State.mode === "expanded" && State.view === "question") this.animateGeometry(false);
+  }
+
   // ── File drop ───────────────────────────────────────────────────────────────
 
   private onDragDrop(e: { type: string; paths?: string[] }) {
@@ -462,7 +567,9 @@ export class Island {
   // ── Geometry ────────────────────────────────────────────────────────────────
 
   private targetSize(): { w: number; h: number; r: number } {
-    const { w, h } = islandSize(State.mode, State.view, State.chatHistory.length);
+    const q = State.pendingQuestion;
+    const options = q ? q.questions[q.index]?.options.length ?? 0 : 0;
+    const { w, h } = islandSize(State.mode, State.view, State.chatHistory.length, options);
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
   }
@@ -560,7 +667,12 @@ export class Island {
     });
 
     window.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && State.mode === "expanded" && !State.isPinned) this.collapse();
+      const q = State.pendingQuestion;
+      const onCard = State.mode === "expanded" && (State.view === "question" || State.view === "approval");
+      if (onCard && q && !q.typing && /^[1-4]$/.test(e.key)) this.questionPick(Number(e.key) - 1);
+      else if (onCard && q && !q.typing && e.key === "Enter") this.questionNext();
+      else if (onCard && !q?.typing && e.key === "Escape" && (q || State.pendingApproval)) this.answerInTerminal();
+      else if (e.key === "Escape" && State.mode === "expanded" && !State.isPinned) this.collapse();
       State.lastActivity = performance.now();
     });
 

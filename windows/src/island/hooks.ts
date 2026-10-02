@@ -5,14 +5,11 @@
 
 import { Bridge, onEvent } from "../core/bridge";
 import { Sound } from "../core/sound";
-import { State } from "../core/state";
+import { State, type AskQuestion } from "../core/state";
 import type { Island } from "./island";
 import { t } from "../i18n";
 
 const CLAUDE_ID = "integration_claude";
-
-/** Clears the approval card if no decision was made before the hook gave up. */
-let pendingTimeout: number | null = null;
 
 interface HookPayload {
   hook_event_name?: string;
@@ -102,6 +99,65 @@ function approvalTarget(tool: string, input: Record<string, unknown>): string {
   return tool;
 }
 
+/**
+ * `AskUserQuestion`'s input, checked against what Claude Code documents: 1–4
+ * questions, 2–4 options each, every question and label a non-empty string.
+ * Anything else returns null and the terminal asks instead — the answers are
+ * keyed by question text, so two identical questions could not both be answered
+ * either.
+ */
+export function parseQuestions(input: Record<string, unknown>): AskQuestion[] | null {
+  const raw = input.questions;
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 4) return null;
+  const out: AskQuestion[] = [];
+  for (const q of raw) {
+    if (!q || typeof q !== "object") return null;
+    const { question, header, options, multiSelect } = q as Record<string, unknown>;
+    if (typeof question !== "string" || !question.trim()) return null;
+    if (!Array.isArray(options) || options.length < 2 || options.length > 4) return null;
+    const opts = [];
+    for (const o of options) {
+      const label = (o as Record<string, unknown> | null)?.label;
+      const description = (o as Record<string, unknown> | null)?.description;
+      if (typeof label !== "string" || !label.trim()) return null;
+      opts.push({ label, description: typeof description === "string" ? description : "" });
+    }
+    out.push({
+      question,
+      header: typeof header === "string" ? header : "",
+      options: opts,
+      multiSelect: multiSelect === true,
+    });
+  }
+  if (new Set(out.map((q) => q.question)).size !== out.length) return null;
+  return out;
+}
+
+/**
+ * Claude Code moved on while a card was up, so the prompt was settled in the
+ * terminal. It does not kill the relay when the terminal wins — the relay would
+ * wait until the session ends — so this is how the card learns it is stale.
+ *
+ * Only events that cannot happen while the prompt is still waiting count: the
+ * same tool finishing, the turn ending, a new prompt. `Notification` does not —
+ * Claude Code sends one *because* the prompt is waiting.
+ */
+function settledElsewhere(island: Island, name: string, payload: HookPayload) {
+  const card = State.pendingQuestion
+    ? { id: State.pendingQuestion.requestId, session: State.pendingQuestion.sessionId, tool: "AskUserQuestion" }
+    : State.pendingApproval
+      ? { id: State.pendingApproval.requestId, session: State.pendingApproval.sessionId, tool: State.pendingApproval.tool }
+      : null;
+  if (!card || (card.session && payload.session_id && card.session !== payload.session_id)) return;
+  const toolDone = (name === "PostToolUse" || name === "PostToolUseFailure") && payload.tool_name === card.tool;
+  const turnMoved = name === "Stop" || name === "StopFailure" || name === "SessionEnd" || name === "UserPromptSubmit";
+  if (!toolDone && !turnMoved) return;
+  void Bridge.log(`${name} after req=${card.id} — answered elsewhere`);
+  // Frees the relay too: it exits with nothing on stdout, which is ignored now.
+  void Bridge.approvalDecline(card.id);
+  island.releaseCard(card.id);
+}
+
 function upsert(projectName: string, cwd: string) {
   const t = State.tasks.find((x) => x.id === CLAUDE_ID);
   if (!t) return;
@@ -120,6 +176,12 @@ function clearSession() {
 
 export function registerHookHandlers(island: Island) {
   void onEvent<HookPayload>("hook", (payload) => handleHook(island, payload));
+  // The relay hung up while a card was up: the terminal took the answer (or the
+  // session ended), so the card is asking about something that is gone.
+  void onEvent<{ request_id: string }>("hook-cancelled", ({ request_id }) => {
+    void Bridge.log(`hook-cancelled req=${request_id}`);
+    island.releaseCard(request_id);
+  });
 }
 
 function handleHook(island: Island, payload: HookPayload) {
@@ -132,6 +194,7 @@ function handleHook(island: Island, payload: HookPayload) {
   }
 
   const name = payload.hook_event_name ?? "";
+  settledElsewhere(island, name, payload);
   const cwd = payload.cwd ?? "";
   const raw = lastPathComponent(cwd);
   const projectName = aliasProjectName(raw || t("step.session"));
@@ -233,28 +296,49 @@ function handleHook(island: Island, payload: HookPayload) {
       // One card, one request. A second one must never quietly replace the first
       // — that would leave a human staring at request B while request A waits for
       // a decision nobody can give. Hand it straight back to the terminal.
-      if (State.pendingApproval && State.pendingApproval.requestId !== requestId) {
+      const open = State.pendingApproval?.requestId ?? State.pendingQuestion?.requestId;
+      if (open && open !== requestId) {
         if (requestId) void Bridge.approvalDecline(requestId);
         break;
       }
       upsert(projectName, cwd);
-      if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
       const tool = payload.tool_name ?? t("step.tool");
       const input = payload.tool_input ?? {};
-      State.pendingApproval = {
-        requestId,
-        sessionId: payload.session_id ?? "",
-        tool,
-        command: approvalTarget(tool, input),
-      };
+      const sessionId = payload.session_id ?? "";
+      let view: "approval" | "question" = "approval";
+      if (tool === "AskUserQuestion") {
+        // Claude asking, not a permission: a yes/no card would be meaningless.
+        const questions = parseQuestions(input);
+        if (!questions) {
+          // A shape we do not understand is answered in the terminal, never
+          // guessed at. The read-only card still says a question is waiting.
+          if (requestId) void Bridge.approvalDecline(requestId);
+          State.updateTask(CLAUDE_ID, "question");
+          State.appendStep(CLAUDE_ID, t("question.fallback"));
+          if (focused) surface("question", true);
+          break;
+        }
+        State.pendingQuestion = {
+          requestId,
+          sessionId,
+          questions,
+          index: 0,
+          picked: questions.map(() => []),
+          custom: questions.map(() => null),
+          typing: false,
+        };
+        view = "question";
+      } else {
+        State.pendingApproval = { requestId, sessionId, tool, command: approvalTarget(tool, input) };
+      }
       // The relay's short ack window closes in 800 ms; everything below this
       // line is synchronous, so the card really is up by the time it lands.
       if (requestId) void Bridge.approvalAck(requestId);
-      State.updateTask(CLAUDE_ID, "approval");
+      State.updateTask(CLAUDE_ID, view === "question" ? "question" : "approval");
       State.isPinned = true;
-      Sound.play("approval");
+      Sound.play(view === "question" ? "question" : "approval");
       if (focused) {
-        island.alert("approval");
+        island.alert(view);
       } else {
         // Another agent holds the view, so the card would yank it away. The badge
         // is the signal instead — but it has to be on screen for that to mean
@@ -262,19 +346,8 @@ function handleHook(island: Island, payload: HookPayload) {
         State.setPillBadge(CLAUDE_ID, "approval");
         island.reveal();
       }
-      // Coucou answers within 108 s or not at all; after that the terminal has
-      // taken over and the card would be lying.
-      pendingTimeout = window.setTimeout(() => {
-        pendingTimeout = null;
-        if (!State.pendingApproval) return;
-        State.pendingApproval = null;
-        State.isPinned = false;
-        island.dropPin();
-        State.updateTask(CLAUDE_ID, "working");
-        State.setPillBadge(CLAUDE_ID, null);
-        if (State.view === "approval") island.setView(State.defaultView());
-        State.notify();
-      }, 110_000);
+      // No timer: the card stays until it is answered here, handed to the
+      // terminal, or the relay hangs up (`hook-cancelled`).
       break;
     }
 

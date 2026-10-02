@@ -75,6 +75,9 @@ export const Bridge = {
 
   approvalDecision: (requestId: string, decision: "allow" | "deny") =>
     call<void>("approval_decision", { requestId, decision }),
+  /** An `AskUserQuestion` card answered: question text → label(s) or own words. */
+  questionAnswer: (requestId: string, answers: Record<string, string>) =>
+    call<void>("question_answer", { requestId, answers }),
   /** "The card is up" — until this lands the relay only waits a moment. */
   approvalAck: (requestId: string) => call<void>("approval_ack", { requestId }),
   /** "Nobody can act on this" — Claude Code asks in the terminal right away. */
@@ -137,6 +140,8 @@ export interface DroppedFile {
 
 export interface HookStatus {
   installed: boolean;
+  /** Installed by an older version (e.g. the 120 s permission timeout). */
+  outdated: boolean;
   settingsPath: string;
   hookPath: string;
   hookReady: boolean;

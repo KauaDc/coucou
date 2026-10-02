@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Coucou — question card preview</title>
+    <style>
+      html, body { margin: 0; background: #2a2b30; }
+      #controls { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; font: 12px system-ui; }
+      #controls button { font: inherit; padding: 6px 10px; }
+      #log { position: fixed; bottom: 52px; left: 50%; transform: translateX(-50%); width: 640px; font: 12px ui-monospace, monospace; color: #ddd; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="log"></div>
+    <div id="controls">
+      <button data-set="three">3 questions</button>
+      <button data-set="single">1 question, 2 options</button>
+      <button data-set="approval">Approval</button>
+    </div>
+    <script type="module" src="./question-preview.ts"></script>
+  </body>
+</html>

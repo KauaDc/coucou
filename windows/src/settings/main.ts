@@ -88,6 +88,12 @@ function claudeSection(status: HookStatus): HTMLElement {
         text: t("settings.hooks.relayMissing"),
       }));
     }
+    if (status.installed && status.outdated) {
+      body.append(h("div", {
+        class: "notice warn",
+        text: t("settings.hooks.outdated"),
+      }));
+    }
 
     const actions = h("div", { class: "row" });
     const install = h("button", {
@@ -527,7 +533,7 @@ async function main() {
     version = boot.version;
   }
   const status = (await Bridge.hooksStatus()) ?? {
-    installed: false, settingsPath: "", hookPath: "", hookReady: false,
+    installed: false, outdated: false, settingsPath: "", hookPath: "", hookReady: false,
   };
 
   const keys = [

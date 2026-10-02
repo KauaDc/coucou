@@ -28,6 +28,35 @@ export interface ApprovalInfo {
   command: string;
 }
 
+/** One choice of an `AskUserQuestion` question. */
+export interface QuestionOption {
+  label: string;
+  description: string;
+}
+
+/** One question of an `AskUserQuestion` call, as Claude Code sends it. */
+export interface AskQuestion {
+  question: string;
+  header: string;
+  options: QuestionOption[];
+  multiSelect: boolean;
+}
+
+/** An `AskUserQuestion` card: 1–4 questions, answered one after the other. */
+export interface PendingQuestion {
+  requestId: string;
+  sessionId: string;
+  questions: AskQuestion[];
+  /** The question on screen. */
+  index: number;
+  /** Option indices picked, per question. */
+  picked: number[][];
+  /** The user's own words, per question — replaces the picked options. */
+  custom: (string | null)[];
+  /** The "Other…" field is open on the current question. */
+  typing: boolean;
+}
+
 export interface ChatMessage {
   id: number;
   role: "user" | "assistant";
@@ -152,6 +181,7 @@ class AppState {
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
   pendingApproval: ApprovalInfo | null = null;
+  pendingQuestion: PendingQuestion | null = null;
 
   integrations: Record<string, IntegrationInfo> = {};
 

@@ -24,6 +24,16 @@ export interface ViewActions {
   openTarget(): void;
   openUrl(url: string): void;
   decide(d: "allow" | "deny"): void;
+  /** Leave the approval or question card to Claude Code's terminal prompt. */
+  answerInTerminal(): void;
+  /** Option `i` of the question on screen: answers it, or toggles it (multi). */
+  questionPick(i: number): void;
+  questionNext(): void;
+  questionBack(): void;
+  /** Opens or closes the "Other…" field. */
+  questionOther(open: boolean): void;
+  /** The user's own words for the question on screen. */
+  questionCustom(text: string): void;
   toggleSound(): void;
   setVolume(v: number): void;
   setAutoClose(seconds: number): void;
@@ -315,15 +325,17 @@ function buildApproval(actions: ViewActions): ViewHost {
       // is the command, the file path or the URL being authorised, not just the
       // name of the tool asking.
       code.textContent = State.pendingApproval?.command || State.pendingApproval?.tool || "…";
-      // Two buttons, built once. Rebuilding them between a mouse-down and a
-      // mouse-up would swallow the click, and there is nothing left to vary:
-      // "Always" is gone until the remembered-rules list exists to back it.
+      // Built once. Rebuilding them between a mouse-down and a mouse-up would
+      // swallow the click, and there is nothing left to vary: "Always" is gone
+      // until the remembered-rules list exists to back it.
       if (rowKey === "built") return;
       rowKey = "built";
       clear(row);
       row.append(
         btn(t("approval.deny"), "secondary", () => actions.decide("deny"), "N"),
         btn(t("approval.allow"), "primary", () => actions.decide("allow"), "Y"),
+        h("div", { class: "spacer" }),
+        btn(t("approval.terminal"), "secondary", () => actions.answerInTerminal(), "Esc"),
       );
     },
   };
@@ -331,20 +343,117 @@ function buildApproval(actions: ViewActions): ViewHost {
 
 // ── Question ──────────────────────────────────────────────────────────────────
 
-function buildQuestion(): ViewHost {
+/**
+ * Two cards in one. With an `AskUserQuestion` pending it is answered right here:
+ * one question at a time, a click per choice (several for a multi-select), or
+ * the user's own words. Without one — a Notification ending in "?" — it only
+ * says that the terminal is waiting.
+ */
+function buildQuestion(actions: ViewActions): ViewHost {
   const who = h("div");
-  const title = h("div", { class: "title" });
+  const meta = h("div", { class: "q-meta" });
+  const title = h("div", { class: "title q-title" });
+  const grid = h("div", { class: "q-grid" });
+  const input = h("input", {
+    class: "q-input",
+    type: "text",
+    placeholder: t("question.otherPlaceholder"),
+  }) as HTMLInputElement;
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") actions.questionCustom(input.value);
+    if (e.key === "Escape") actions.questionOther(false);
+  });
+  const field = h("div", { class: "q-field" }, input);
   const row = h("div", { class: "actions" });
-  const el = h("div", { class: "view" }, card("cyan", stack(116, 16, who, title, row)));
+  const el = h(
+    "div",
+    { class: "view" },
+    card("cyan", stack(116, 16, who, meta, title, grid, field, row)),
+  );
+
+  // Buttons are rebuilt only when another question comes up, never on a plain
+  // sync: rebuilding between a mouse-down and a mouse-up would swallow the click.
+  let builtKey = "";
+  let options: HTMLElement[] = [];
+  let next: HTMLButtonElement | null = null;
+
+  function rebuild(key: string) {
+    builtKey = key;
+    clear(grid);
+    clear(row);
+    options = [];
+    next = null;
+    const q = State.pendingQuestion;
+    const current = q?.questions[q.index];
+    if (!q || !current) {
+      row.append(h("div", { class: "sub", text: t("question.sub") }));
+      return;
+    }
+    current.options.forEach((o, i) => {
+      const b = h(
+        "button",
+        { class: "q-opt", title: o.description || o.label, onclick: () => actions.questionPick(i) },
+        h("span", { class: "q-n", text: String(i + 1) }),
+        h("span", { class: "q-text" },
+          h("span", { class: "q-l", text: o.label }),
+          o.description ? h("span", { class: "q-d", text: o.description }) : null,
+        ),
+      );
+      options.push(b);
+      grid.append(b);
+    });
+    if (q.index > 0) row.append(btn(t("question.back"), "secondary", () => actions.questionBack()));
+    row.append(btn(t("question.other"), "secondary", () => actions.questionOther(true)));
+    row.append(h("div", { class: "spacer" }));
+    row.append(btn(t("question.terminal"), "secondary", () => actions.answerInTerminal(), "Esc"));
+    // A single choice is answered by its click; only a multi-select needs a
+    // button to say "that's all".
+    if (current.multiSelect) {
+      const last = q.index === q.questions.length - 1;
+      next = btn(last ? t("question.send") : t("question.next"), "primary", () => actions.questionNext(), "↵") as HTMLButtonElement;
+      row.append(next);
+    }
+  }
+
   return {
     el,
     sync() {
+      const q = State.pendingQuestion;
+      const current = q?.questions[q.index];
       clear(who);
       who.append(agentWho(State.focusTask, t("question.who")));
-      const task = State.focusTask;
-      title.textContent = task?.steps.at(-1) ?? t("question.fallback");
-      clear(row);
-      row.append(h("div", { class: "sub", text: t("question.sub") }));
+
+      const key = q && current ? `${q.requestId}:${q.index}` : "readonly";
+      if (key !== builtKey) rebuild(key);
+
+      if (!q || !current) {
+        meta.style.display = "none";
+        grid.style.display = "none";
+        field.style.display = "none";
+        title.textContent = State.focusTask?.steps.at(-1) ?? t("question.fallback");
+        return;
+      }
+
+      const bits = [current.header, q.questions.length > 1
+        ? t("question.progress", { n: String(q.index + 1), total: String(q.questions.length) })
+        : "", current.multiSelect ? t("question.multiHint") : ""].filter(Boolean);
+      meta.textContent = bits.join(" · ");
+      meta.style.display = bits.length ? "" : "none";
+      title.textContent = current.question;
+      title.title = current.question;
+
+      grid.style.display = q.typing ? "none" : "";
+      field.style.display = q.typing ? "" : "none";
+      if (!q.typing) input.value = q.custom[q.index] ?? "";
+
+      const picked = q.picked[q.index];
+      options.forEach((b, i) => b.classList.toggle("on", picked.includes(i)));
+      if (next) next.disabled = picked.length === 0 && q.custom[q.index] == null;
+    },
+    focus() {
+      input.focus();
+      input.select();
     },
   };
 }
@@ -511,7 +620,7 @@ export function buildViews(
   map.set("overview", buildOverview(actions));
   map.set("empty", buildEmpty(actions));
   map.set("approval", buildApproval(actions));
-  map.set("question", buildQuestion());
+  map.set("question", buildQuestion(actions));
   map.set("error", buildError(actions));
   map.set("finished", buildFinished(actions));
   map.set("confused", buildConfused());

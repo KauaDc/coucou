@@ -19,7 +19,9 @@ use windows::Win32::System::SystemInformation::GetLocalTime;
 use crate::settings;
 
 /// Every event the island reacts to, with the hook timeout written to settings.json.
-/// PermissionRequest waits for a human, so it gets the decision timeout + 10 s.
+/// PermissionRequest waits for a human with no deadline of our own — Claude Code
+/// keeps its terminal prompt up meanwhile and takes the first answer — but Claude
+/// Code insists on a number, so it gets a day.
 pub const HOOK_EVENTS: &[(&str, u64)] = &[
     ("SessionStart", 10),
     ("SessionEnd", 10),
@@ -27,7 +29,7 @@ pub const HOOK_EVENTS: &[(&str, u64)] = &[
     ("PreToolUse", 10),
     ("PostToolUse", 10),
     ("PostToolUseFailure", 10),
-    ("PermissionRequest", 120),
+    ("PermissionRequest", 86_400),
     ("Notification", 10),
     ("Stop", 10),
     ("StopFailure", 10),
@@ -42,6 +44,9 @@ const MARKER: &str = "coucou-hook";
 #[serde(rename_all = "camelCase")]
 pub struct HookStatus {
     pub installed: bool,
+    /// Installed, but not as this version would write it (an old timeout, a
+    /// missing event): the settings offer to reinstall.
+    pub outdated: bool,
     pub settings_path: String,
     pub hook_path: String,
     pub hook_ready: bool,
@@ -134,6 +139,28 @@ fn entry_is_ours(entry: &Value) -> bool {
             })
         })
         .unwrap_or(false)
+}
+
+/// True when Coucou's entries differ from what `merged` would write now — an
+/// event missing, or one with another timeout (the 120 s PermissionRequest of
+/// earlier versions, which made Claude Code drop the island's card).
+fn is_outdated(current: &Value) -> bool {
+    let Some(hooks) = current.get("hooks").and_then(Value::as_object) else { return false };
+    HOOK_EVENTS.iter().any(|(event, timeout)| {
+        let ours: Vec<&Value> = hooks
+            .get(*event)
+            .and_then(Value::as_array)
+            .map(|list| list.iter().filter(|e| entry_is_ours(e)).collect())
+            .unwrap_or_default();
+        let current_timeout = ours
+            .first()
+            .and_then(|e| e.get("hooks"))
+            .and_then(Value::as_array)
+            .and_then(|h| h.first())
+            .and_then(|h| h.get("timeout"))
+            .and_then(Value::as_u64);
+        ours.len() != 1 || current_timeout != Some(*timeout)
+    })
 }
 
 /// Settings with Coucou's hooks added; everything else is left untouched.
@@ -250,6 +277,7 @@ pub fn status() -> HookStatus {
     let hook_path = settings::hook_exe_path();
     HookStatus {
         installed,
+        outdated: installed && is_outdated(&current),
         settings_path: settings_path().to_string_lossy().to_string(),
         hook_ready: hook_path.exists(),
         hook_path: hook_path.to_string_lossy().to_string(),
@@ -509,6 +537,32 @@ mod tests {
         // And removing ours puts it back exactly as it was.
         let cleaned = without_ours(&after);
         assert_eq!(cleaned, existing);
+    }
+
+    #[test]
+    fn permission_requests_get_a_day_and_old_installs_are_flagged() {
+        let fresh = merged(&json!({}));
+        let entry = &fresh["hooks"]["PermissionRequest"][0]["hooks"][0];
+        assert_eq!(entry["timeout"], 86_400);
+        assert!(!is_outdated(&fresh));
+
+        // What earlier versions wrote.
+        let mut old = fresh.clone();
+        old["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"] = json!(120);
+        assert!(is_outdated(&old));
+
+        // An event this version listens to but the file lacks.
+        let mut missing = fresh.clone();
+        missing["hooks"].as_object_mut().unwrap().remove("SubagentStop");
+        assert!(is_outdated(&missing));
+
+        // Foreign hooks next to ours do not count.
+        let mut foreign = fresh;
+        foreign["hooks"]["PermissionRequest"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "hooks": [{ "type": "command", "command": "other.exe", "timeout": 5 }] }));
+        assert!(!is_outdated(&foreign));
     }
 
     #[test]
