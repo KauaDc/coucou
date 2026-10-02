@@ -159,3 +159,7 @@ problems. It stays on your machine.
   attach it as context, and jumping to a specific terminal window — "Open
   terminal" opens the working folder in VS Code when `code` is on your `PATH`.
 - Cal.com shows the next bookings as a list rather than the Mac's calendar.
+- Discloud is Windows-only: the card lists your apps (online/offline, CPU, RAM),
+  alerts when one goes down or comes back, shows its recent logs, and has Start,
+  Stop and Restart buttons. Stop and Restart need a second click; nothing is sent
+  without one. Paste the API token from the Discloud dashboard in Settings.

@@ -8,7 +8,7 @@ import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { State, type AgentTask } from "../core/state";
 import { Bridge } from "../core/bridge";
-import { LANG, t } from "../i18n";
+import { LANG, t, type Key } from "../i18n";
 
 /** Same shape as the Swift `timeAgo` computed properties. */
 export function timeAgo(value: unknown): string {
@@ -52,6 +52,7 @@ const OPEN_URLS: Record<string, string> = {
   integration_stripe: "https://dashboard.stripe.com/payments",
   integration_notion: "https://notion.so",
   integration_calcom: "https://app.cal.com/bookings",
+  integration_discloud: "https://discloud.com/dashboard",
 };
 
 function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
@@ -317,6 +318,279 @@ function calcomCard(): HTMLElement {
   return h("div", { class: "int-card" }, header("#C9956A", "Cal.com", t("int.kind.schedule")), rows);
 }
 
+// ── Discloud ──────────────────────────────────────────────────────────────────
+// Windows only, and the one card that writes: start / stop / restart. Stop and
+// restart need a second click within 4 s.
+
+const DISCLOUD = "integration_discloud";
+const DISCLOUD_COLOR = "#14B8A6";
+const CONFIRM_MS = 4000;
+const NOTICE_MS = 6000;
+
+type DiscloudAction = "start" | "stop" | "restart";
+
+const ACTION_LABEL: Record<DiscloudAction, Key> = {
+  start: "int.start",
+  stop: "int.stop",
+  restart: "int.restart",
+};
+const CONFIRM_LABEL: Record<DiscloudAction, Key> = {
+  start: "int.start",
+  stop: "int.confirmStop",
+  restart: "int.confirmRestart",
+};
+const PENDING_LABEL: Record<DiscloudAction, Key> = {
+  start: "int.starting",
+  stop: "int.stopping",
+  restart: "int.restarting",
+};
+
+interface DiscloudLogsEntry {
+  text: string;
+  url: string | null;
+  error: string | null;
+}
+
+/** UI state that isn't in State. Bumping `version` makes the overview redraw the card. */
+const discloud = {
+  version: 0,
+  selected: null as string | null,
+  /** The detail shows the selected app's logs instead of its actions. */
+  showLogs: false,
+  armed: null as { id: string; action: DiscloudAction; timer: number } | null,
+  pending: new Map<string, DiscloudAction>(),
+  notice: null as { id: string; text: string; ok: boolean; timer: number } | null,
+  logs: new Map<string, DiscloudLogsEntry>(),
+  logsLoading: new Set<string>(),
+  /** Where the user left the log scrolled; "end" follows new lines. */
+  logScroll: new Map<string, number | "end">(),
+};
+
+function bumpDiscloud() {
+  discloud.version++;
+  State.notify();
+}
+
+/** Extra redraw key for cards whose state lives here rather than in State. */
+export function cardUiKey(id: string): string {
+  return id === DISCLOUD ? String(discloud.version) : "";
+}
+
+function loadDiscloudLogs(id: string) {
+  if (discloud.logsLoading.has(id)) return;
+  discloud.logsLoading.add(id);
+  bumpDiscloud();
+  Bridge.discloudLogs(id)
+    .then((r) => discloud.logs.set(id, { text: r.text, url: r.url, error: null }))
+    .catch((err) => {
+      const previous = discloud.logs.get(id);
+      discloud.logs.set(id, { text: previous?.text ?? "", url: previous?.url ?? null, error: String(err) });
+    })
+    .finally(() => {
+      discloud.logsLoading.delete(id);
+      bumpDiscloud();
+    });
+}
+
+function showNotice(id: string, text: string, ok: boolean) {
+  if (discloud.notice) window.clearTimeout(discloud.notice.timer);
+  const timer = window.setTimeout(() => {
+    discloud.notice = null;
+    bumpDiscloud();
+  }, NOTICE_MS);
+  discloud.notice = { id, text, ok, timer };
+}
+
+function onDiscloudAction(id: string, action: DiscloudAction) {
+  if (discloud.pending.has(id)) return;
+  const armed = discloud.armed;
+  const confirmed = armed?.id === id && armed.action === action;
+  if (armed) window.clearTimeout(armed.timer);
+  discloud.armed = null;
+
+  if (action !== "start" && !confirmed) {
+    const timer = window.setTimeout(() => {
+      discloud.armed = null;
+      bumpDiscloud();
+    }, CONFIRM_MS);
+    discloud.armed = { id, action, timer };
+    bumpDiscloud();
+    return;
+  }
+
+  discloud.pending.set(id, action);
+  bumpDiscloud();
+  void Bridge.discloudAction(id, action).then((result) => {
+    discloud.pending.delete(id);
+    showNotice(id, result?.message ?? t("int.actionFailed"), result?.ok ?? false);
+    bumpDiscloud();
+    // Fresh lines once the container has moved.
+    if (result?.ok) window.setTimeout(() => loadDiscloudLogs(id), 8000);
+  });
+}
+
+function discloudCard(onDetail: () => void): HTMLElement {
+  const apps = arr(DISCLOUD, "apps");
+  const online = apps.filter((a) => a.online === true).length;
+  const extra = apps.length
+    ? h("span", { class: "int-total" }, h("span", { text: `${online}/${apps.length}` }))
+    : undefined;
+  const rows = h("div", { class: "int-rows tight" });
+  if (apps.length === 0) rows.append(h("div", { class: "int-empty", text: t("int.noApps") }));
+  for (const a of apps.slice(0, 3)) {
+    const id = String(a.id);
+    const up = a.online === true;
+    const stats = up ? [a.cpu, a.memory].filter(Boolean).join(" · ") : t("int.offline");
+    rows.append(
+      h(
+        "button",
+        {
+          class: "int-row int-app",
+          title: t("int.details"),
+          onclick: () => {
+            discloud.selected = id;
+            discloud.showLogs = false;
+            onDetail();
+          },
+        },
+        dot(up ? "#22C55E" : "#F4505E", 5),
+        h("span", { class: "int-name", text: String(a.name ?? id) }),
+        h("span", { class: "int-ago", text: stats }),
+      ),
+    );
+  }
+  if (apps.length > 3) {
+    rows.append(h("div", { class: "int-empty", text: t("int.moreApps", { n: apps.length - 3 }) }));
+  }
+  return h("div", { class: "int-card" }, header(DISCLOUD_COLOR, "Discloud", t("int.kind.apps"), extra), rows);
+}
+
+/** "78.1MB/512MB" → "78.1/512 MB"; anything else is left as Discloud sent it. */
+function compactMemory(memory: string): string {
+  const m = /^([\d.]+)\s*([KMGT]i?B)\s*\/\s*([\d.]+)\s*\2$/i.exec(memory.trim());
+  return m ? `${m[1]}/${m[3]} ${m[2]}` : memory;
+}
+
+function discloudDetail(onBack: () => void): HTMLElement | null {
+  const a = arr(DISCLOUD, "apps").find((x) => x.id === discloud.selected);
+  if (!a) return null;
+  const id = String(a.id);
+  const up = a.online === true;
+  const accent = up ? "#22C55E" : "#F4505E";
+  // The card is ~135 px tall: the logs get the whole card instead of a sliver under the buttons.
+  if (discloud.showLogs) return discloudLogsView(id, String(a.name ?? id), accent);
+
+  const meta = h("div", { class: "int-meta" });
+  // Each stat is its own block so a narrow card wraps whole stats, never mid-word.
+  const stats = [
+    a.cpu ? `CPU ${a.cpu}` : "",
+    a.memory ? `RAM ${compactMemory(String(a.memory))}` : "",
+    up && a.startedAt ? t("int.uptime", { t: timeAgo(a.startedAt) }) : "",
+  ].filter(Boolean);
+  for (const s of stats) meta.append(h("span", { text: s }));
+
+  // No writes while paused or switched off — Rust refuses too, this just says so.
+  const blocked = State.paused || !State.settings.activeIntegrations.includes(DISCLOUD);
+  const pending = discloud.pending.get(id);
+  const buttons = h("div", { class: "int-actions" });
+  const available: DiscloudAction[] = up ? ["restart", "stop"] : ["start"];
+  for (const action of available) {
+    const armed = discloud.armed?.id === id && discloud.armed.action === action;
+    buttons.append(
+      h("button", {
+        class: `int-action${action === "start" ? "" : " danger"}${armed ? " armed" : ""}`,
+        disabled: blocked || pending != null,
+        text: t(armed ? CONFIRM_LABEL[action] : ACTION_LABEL[action]),
+        onclick: () => onDiscloudAction(id, action),
+      }),
+    );
+  }
+  buttons.append(
+    h("button", {
+      class: "int-action",
+      text: t("int.logs"),
+      onclick: () => {
+        discloud.showLogs = true;
+        if (!discloud.logs.has(id)) loadDiscloudLogs(id);
+        else bumpDiscloud();
+      },
+    }),
+  );
+
+  const notice = discloud.notice?.id === id ? discloud.notice : null;
+  const status = pending
+    ? h("div", { class: "int-notice", text: t(PENDING_LABEL[pending]) })
+    : notice
+      ? h("div", { class: "int-notice", style: `color:${notice.ok ? "#22C55E" : "#F5A524"}`, text: notice.text })
+      : null;
+
+  return h(
+    "div",
+    { class: "int-card detail discloud" },
+    h(
+      "div",
+      { class: "int-detail-head" },
+      h("button", { class: "int-back", onclick: onBack }, svg(ICONS.chevronLeft, 10, { stroke: 2.4 })),
+      dot(accent, 6),
+      h("b", { text: String(a.name ?? id) }),
+      h("span", {
+        class: "int-badge",
+        style: `color:${accent};background:${accent}24`,
+        text: up ? t("int.online") : t("int.offline"),
+      }),
+    ),
+    meta,
+    buttons,
+    status,
+  );
+}
+
+function discloudLogsView(id: string, name: string, accent: string): HTMLElement {
+  const blocked = State.paused || !State.settings.activeIntegrations.includes(DISCLOUD);
+  const logs = discloud.logs.get(id);
+  const loading = discloud.logsLoading.has(id);
+  const logText = logs?.error ?? (logs?.text || (loading ? t("int.loading") : t("int.noLogs")));
+  const pre = h("pre", { class: `int-detail-text int-logs${logs?.error ? " failed" : ""}`, text: logText });
+  pre.addEventListener("scroll", () => {
+    const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
+    discloud.logScroll.set(id, atEnd ? "end" : pre.scrollTop);
+  });
+  requestAnimationFrame(() => {
+    const at = discloud.logScroll.get(id) ?? "end";
+    pre.scrollTop = at === "end" ? pre.scrollHeight : at;
+  });
+
+  return h(
+    "div",
+    { class: "int-card detail discloud" },
+    h(
+      "div",
+      { class: "int-detail-head" },
+      h(
+        "button",
+        {
+          class: "int-back",
+          onclick: () => {
+            discloud.showLogs = false;
+            bumpDiscloud();
+          },
+        },
+        svg(ICONS.chevronLeft, 10, { stroke: 2.4 }),
+      ),
+      dot(accent, 6),
+      h("b", { text: `${name} · ${t("int.logs")}` }),
+      h("button", {
+        class: "link-btn int-logs-refresh",
+        style: `color:${DISCLOUD_COLOR}d9`,
+        text: loading ? t("int.loading") : t("int.refresh"),
+        disabled: loading || blocked,
+        onclick: () => loadDiscloudLogs(id),
+      }),
+    ),
+    pre,
+  );
+}
+
 // ── n8n ───────────────────────────────────────────────────────────────────────
 
 function n8nCard(task: AgentTask, onDetail: () => void, openSettings: () => void): HTMLElement {
@@ -399,6 +673,7 @@ export function hasIntegrationData(id: string): boolean {
     case "integration_notion":
       return arr(id, "pages").length > 0;
     case "integration_calcom":
+    case "integration_discloud":
       return info.loaded;
     default:
       return false;
@@ -414,6 +689,10 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
   }
   if (task.id === "integration_vercel" && hasIntegrationData(task.id)) {
     return hooks.detailOpen ? vercelDetail(hooks.closeDetail) : vercelCard(hooks.openDetail);
+  }
+  if (task.id === DISCLOUD && hasIntegrationData(task.id)) {
+    const detail = hooks.detailOpen ? discloudDetail(hooks.closeDetail) : null;
+    return detail ?? discloudCard(hooks.openDetail);
   }
   if (!hasIntegrationData(task.id)) return idleCard(task, hooks.openSettings);
 

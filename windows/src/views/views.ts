@@ -10,7 +10,7 @@ import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
-import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
+import { cardUiKey, renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 import { t } from "../i18n";
 
 export interface ViewActions {
@@ -203,7 +203,7 @@ function buildOverview(actions: ViewActions): ViewHost {
         const key = [
           task.id, detailOpen, task.state, task.steps.join("|"),
           info?.loaded, info?.error, info?.configured,
-          JSON.stringify(info?.data ?? {}),
+          JSON.stringify(info?.data ?? {}), cardUiKey(task.id),
         ].join("~");
         if (key !== cardKey) {
           cardKey = key;

@@ -9,3 +9,4 @@
 - Windows: the interface is in Brazilian Portuguese when Windows is set to Portuguese, English otherwise
 - Windows: with several displays, the island can be pinned to any of them, and in "Display under the cursor" mode the top of every display wakes it
 - Windows: the chat can use Gemini instead of Claude — pick the provider, key and model in Settings → Chat
+- Windows: Discloud integration — app status, CPU and RAM, outage alerts, recent logs, and Start / Stop / Restart buttons (Stop and Restart ask for a second click)

@@ -321,6 +321,18 @@ async fn refresh_integration(app: AppHandle, id: String) {
     integrations::poll_once(app, &id).await;
 }
 
+/// Start / stop / restart buttons in the Discloud card — only ever from a click.
+#[tauri::command]
+async fn discloud_action(app: AppHandle, app_id: String, action: String) -> integrations::DiscloudActionResult {
+    integrations::discloud_action(app, app_id, action).await
+}
+
+/// Logs shown in the Discloud detail, fetched when it opens.
+#[tauri::command]
+async fn discloud_logs(app: AppHandle, app_id: String) -> Result<integrations::DiscloudLogs, String> {
+    integrations::discloud_logs(app, app_id).await
+}
+
 /// Lets the island write to the same log as the Rust side.
 #[tauri::command]
 fn log_line(message: String) {
@@ -433,6 +445,8 @@ pub fn run() {
             secret_set,
             secret_clear,
             refresh_integration,
+            discloud_action,
+            discloud_logs,
             open_n8n,
             open_settings_window,
             set_paused,

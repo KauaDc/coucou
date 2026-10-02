@@ -336,6 +336,8 @@ const INTEGRATIONS: IntegrationDef[] = [
     fields: [{ key: "notion-api-key", label: t("settings.int.integrationToken"), placeholder: "ntn_…", secret: true }] },
   { id: "integration_calcom", name: "Cal.com", color: "#C9956A",
     fields: [{ key: "calcom-api-key", label: t("settings.api.key"), placeholder: "cal_…", secret: true }] },
+  { id: "integration_discloud", name: "Discloud", color: "#14B8A6",
+    fields: [{ key: "discloud-token", label: t("settings.int.token"), placeholder: "…", secret: true }] },
 ];
 
 const MAX_ACTIVE = 4;
@@ -531,6 +533,7 @@ async function main() {
   const keys = [
     "stripe-api-key", "github-token", "vercel-token",
     "n8n-url", "n8n-api-key", "resend-api-key", "notion-api-key", "calcom-api-key",
+    "discloud-token",
   ];
   const present: Record<string, boolean> = {};
   for (const k of keys) present[k] = (await Bridge.secretPresent(k)) ?? false;

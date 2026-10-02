@@ -95,6 +95,11 @@ export const Bridge = {
 
   // ── Integrations ──────────────────────────────────────────────────────────
   refreshIntegration: (id: string) => call<void>("refresh_integration", { id }),
+  /** Start / stop / restart a Discloud app — only ever from a click. */
+  discloudAction: (appId: string, action: "start" | "stop" | "restart") =>
+    call<{ ok: boolean; message: string }>("discloud_action", { appId, action }),
+  discloudLogs: (appId: string) =>
+    callOrThrow<{ text: string; url: string | null }>("discloud_logs", { appId }),
   /** Opens the configured n8n instance in the browser. */
   openN8n: () => call<void>("open_n8n"),
 

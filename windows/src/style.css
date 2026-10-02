@@ -1358,3 +1358,86 @@ input[type="range"]::-webkit-slider-thumb {
 .int-card.detail {
   padding-top: 8px;
 }
+
+/* Discloud: clickable app rows, action buttons and the log viewer. */
+.int-app {
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: default;
+}
+
+.int-app:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.int-app .int-ago {
+  margin-left: auto;
+}
+
+.int-card.discloud .int-meta {
+  padding-top: 6px;
+  padding-right: 12px;
+  flex-wrap: wrap;
+  column-gap: 12px;
+  row-gap: 2px;
+}
+
+.int-card.discloud .int-meta span {
+  white-space: nowrap;
+}
+
+.int-logs-refresh {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.int-action {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink-2);
+  font: 500 10.5px var(--font);
+  padding: 3px 9px;
+  border-radius: 999px;
+  cursor: default;
+}
+
+.int-action:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.int-action.danger {
+  color: var(--red-text);
+}
+
+.int-action.armed {
+  background: rgba(244, 80, 94, 0.18);
+  border-color: rgba(244, 80, 94, 0.45);
+  color: var(--red-text);
+}
+
+.int-action:disabled,
+.link-btn:disabled {
+  opacity: 0.4;
+}
+
+.int-notice {
+  font: 400 10px var(--font);
+  color: var(--dim-3);
+  padding-top: 4px;
+}
+
+/* The logs view has the card to itself: header (~28 px) + this. */
+.int-logs {
+  margin-top: 4px;
+  margin-right: 12px;
+  max-height: 84px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  background: var(--card-flat);
+  font-size: 10px;
+}
+
+.int-logs.failed {
+  color: var(--red-text);
+}
