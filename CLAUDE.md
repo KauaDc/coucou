@@ -23,6 +23,17 @@ Antes de escrever código de implementação:
 4. `docs/checklist/TODO_{tarefa}.md` — checklist acionável `[ ]`, quebrado por arquivo e etapa incremental.
 5. **Pare.** Não escreva código no projeto. Resuma e aguarde autorização explícita.
 
+## 3. Versionamento (SemVer)
+
+Siga [Semantic Versioning](https://semver.org/lang/pt-BR/) `MAJOR.MINOR.PATCH`, contando a partir da última tag da plataforma (`git tag`, `git log <tag>..HEAD -- windows`):
+- **PATCH** (`0.2.0 → 0.2.1`): só correções de bug, sem comportamento novo.
+- **MINOR** (`0.2.1 → 0.3.0`): funcionalidade nova ou integração nova, compatível com o que já existe. Zera o PATCH.
+- **MAJOR** (`0.x → 1.0.0`): mudança incompatível (formato de configuração, hooks ou dados que exigem migração). Enquanto estiver em `0.x`, a API não é estável; use MINOR mesmo para mudanças que quebram compatibilidade, e deixe o `1.0.0` para quando o usuário decidir.
+- Suba a versão **uma vez por release**, não a cada commit, e em um commit próprio (`Windows X.Y.Z: ...`), antes de `npm run pack`/tag. Nunca reaproveite um número que já tem tag ou instalador publicado.
+- Ao concluir uma mudança, avise se ela pede bump e qual nível; não suba a versão sem o usuário pedir.
+- **Windows** — tag `windows-vX.Y.Z`. Mantenha iguais: `windows/package.json`, `windows/package-lock.json` (2 ocorrências), `windows/src-tauri/tauri.conf.json`, `windows/Cargo.toml` (`[workspace.package]`) e `windows/Cargo.lock` (entradas `coucou` e `coucou-hook`).
+- **macOS** — tag `vX.Y.Z`. `NotchBuddy/project.yml`: `CFBundleShortVersionString` segue o SemVer e `CFBundleVersion` (build) sempre incrementa, em todo build enviado. O alvo App Store tem numeração própria (tag `appstore-X.Y-buildN`).
+
 # Coucou — guide for AI coding agents
 
 Coucou is a native macOS app: Mochi, a small animated character living in the MacBook notch, shows Claude Code sessions and a few integrations, and lets the user approve, answer, chat and drop files from the notch.
