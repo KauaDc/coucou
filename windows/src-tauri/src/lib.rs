@@ -13,6 +13,7 @@ mod pipe;
 mod secrets;
 mod settings;
 mod tray;
+mod wake_strips;
 mod win_user;
 
 use std::os::windows::process::CommandExt;
@@ -27,7 +28,7 @@ use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 use chat::{Chat, ChatContext, ChatReply};
 use files::DroppedFile;
 use hooks::{HookPreview, HookStatus};
-use island::{PollGate, ScreenInfo};
+use island::{MonitorInfo, PollGate, ScreenInfo};
 use pipe::Pending;
 use settings::Settings;
 
@@ -89,7 +90,7 @@ fn save_settings(app: AppHandle, shared: State<Shared>, chat: State<Chat>, setti
     }
     if screen_changed {
         let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
-        island::apply_geometry(&app, &settings.screen, collapsed);
+        place_island(&app, &settings.screen, collapsed);
     }
     // Keep the other window in step (island ⇄ settings window).
     let _ = app.emit("settings-changed", settings);
@@ -101,7 +102,7 @@ fn save_settings(app: AppHandle, shared: State<Shared>, chat: State<Chat>, setti
 fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
     let pref = shared.settings.lock().unwrap().screen.clone();
     shared.gate.collapsed.store(collapsed, Ordering::Relaxed);
-    island::apply_geometry(&app, &pref, collapsed);
+    place_island(&app, &pref, collapsed);
     // The wake strip must always take the mouse, and a resize invalidates the flag.
     island::set_ignore_cursor(&app, false);
     shared.gate.forget_ignore_state();
@@ -127,7 +128,24 @@ fn focus_window(app: AppHandle, focused: bool) {
 fn reposition(app: AppHandle, shared: State<Shared>) {
     let pref = shared.settings.lock().unwrap().screen.clone();
     let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
-    island::apply_geometry(&app, &pref, collapsed);
+    place_island(&app, &pref, collapsed);
+}
+
+/// Connected displays, for the "Island lives on" picker.
+#[tauri::command]
+fn list_monitors(app: AppHandle) -> Vec<MonitorInfo> {
+    island::list_monitors(&app)
+}
+
+/// Places the island window and, when it is hidden in "display under the cursor"
+/// mode, a wake strip on every other display so it can be woken from any of them.
+pub(crate) fn place_island(app: &AppHandle, pref: &str, collapsed: bool) {
+    let host = island::apply_geometry(app, pref, collapsed);
+    if collapsed && pref == "cursor" {
+        wake_strips::show_except(app, host);
+    } else {
+        wake_strips::hide_all(app);
+    }
 }
 
 #[tauri::command]
@@ -397,6 +415,7 @@ pub fn run() {
             set_island_rect,
             focus_window,
             reposition,
+            list_monitors,
             open_url,
             open_in_vscode,
             quit_app,

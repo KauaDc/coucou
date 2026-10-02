@@ -524,12 +524,15 @@ export class Island {
 
   // ── Input ───────────────────────────────────────────────────────────────────
 
+  /** The cursor reached a wake strip — this window's, or one on another display. */
+  onWake() {
+    Sound.resume();
+    if (State.mode === "hidden") this.fsm.mouseEntered();
+  }
+
   private wireInput() {
     // The wake strip is the only thing the OS can hit while the island is hidden.
-    this.wakeStrip.addEventListener("mouseenter", () => {
-      Sound.resume();
-      if (State.mode === "hidden") this.fsm.mouseEntered();
-    });
+    this.wakeStrip.addEventListener("mouseenter", () => this.onWake());
 
     this.islandEl.addEventListener("mousedown", (e) => {
       Sound.resume();

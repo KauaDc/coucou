@@ -51,6 +51,17 @@ Everything else happens on its own: a Claude Code permission request opens the
 island with **Deny / Allow**, a finished session shows what it did, and
 your integrations sit in the coloured pills next to Mochi.
 
+### Several displays
+
+**Settings… → General → Island lives on** picks the display:
+
+- **Main display** (default) — always the main one.
+- **Display under the cursor** — the island opens on whichever display the mouse
+  is on. While it is hidden, the top centre of *every* display wakes it, so it
+  comes out wherever you are.
+- **Display N — W×H** — pinned to one display. If that display is unplugged the
+  island falls back to the main one, and goes back as soon as it returns.
+
 ## Claude Code
 
 <img src="screenshots/settings.png" width="562" alt="The settings window">

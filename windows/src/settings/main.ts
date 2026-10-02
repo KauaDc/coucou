@@ -436,11 +436,10 @@ function generalSection(): HTMLElement {
   });
 
   const screen = h("select", {}) as HTMLSelectElement;
-  screen.append(
-    h("option", { value: "primary", text: t("settings.general.screenMain") }),
-    h("option", { value: "cursor", text: t("settings.general.screenCursor") }),
-  );
-  screen.value = settings.screen;
+  void fillScreenSelect(screen);
+  // Displays come and go: refresh when told, and whenever the picker is opened.
+  void onEvent<null>("monitors-changed", () => void fillScreenSelect(screen));
+  screen.addEventListener("focus", () => void fillScreenSelect(screen));
   screen.addEventListener("change", () => {
     settings.screen = screen.value as Settings["screen"];
     void save();
@@ -469,6 +468,51 @@ function generalSection(): HTMLElement {
       toggle(settings.autostart, (v) => { settings.autostart = v; void save(); }),
     ),
   );
+}
+
+/**
+ * "Main display", "Display under the cursor", then one entry per connected
+ * display. A pinned display that is unplugged stays listed (and selected) so the
+ * preference is visibly kept while the island falls back to the main display.
+ */
+async function fillScreenSelect(select: HTMLSelectElement) {
+  const monitors = (await Bridge.listMonitors()) ?? [];
+  const options = [
+    h("option", { value: "primary", text: t("settings.general.screenMain") }),
+    h("option", { value: "cursor", text: t("settings.general.screenCursor") }),
+    ...monitors.map((m, i) =>
+      h("option", {
+        value: m.id,
+        text:
+          t("settings.general.screenMonitor", { n: i + 1, w: m.width, h: m.height }) +
+          (m.primary ? t("settings.general.screenPrimarySuffix") : ""),
+      }),
+    ),
+  ];
+  const current = settings.screen;
+  let selected: string = current;
+  if (current.startsWith("monitor:")) {
+    // Same lookup as island::find_pinned: exact, then by name, then by geometry.
+    const [name, geo] = splitMonitorId(current);
+    const match =
+      monitors.find((m) => m.id === current) ??
+      (name ? monitors.find((m) => splitMonitorId(m.id)[0] === name) : undefined) ??
+      monitors.find((m) => splitMonitorId(m.id)[1] === geo);
+    if (match) {
+      selected = match.id;
+    } else {
+      options.push(h("option", { value: current, text: t("settings.general.screenMissing") }));
+    }
+  }
+  select.replaceChildren(...options);
+  select.value = selected;
+}
+
+/** `monitor:<name>@<geometry>` → [name, geometry]. */
+function splitMonitorId(id: string): [string, string] {
+  const body = id.slice("monitor:".length);
+  const at = body.lastIndexOf("@");
+  return at < 0 ? [body, ""] : [body.slice(0, at), body.slice(at + 1)];
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────

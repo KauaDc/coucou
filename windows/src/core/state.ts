@@ -87,7 +87,8 @@ export interface Settings {
   autoCloseInterval: number;
   absenceInterval: number;
   activeIntegrations: string[];
-  screen: "primary" | "cursor";
+  /** "monitor:<name>@<w>x<h>+<x>+<y>" pins the island to one display (see list_monitors). */
+  screen: "primary" | "cursor" | `monitor:${string}`;
   autostart: boolean;
   hooksInstalled: boolean;
   /** Which API the chat talks to. */

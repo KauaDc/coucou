@@ -12,7 +12,8 @@ pub struct Settings {
     pub auto_close_interval: f64,
     pub absence_interval: f64,
     pub active_integrations: Vec<String>,
-    /// "primary" = the main display, "cursor" = whichever display the mouse is on.
+    /// "primary" = the main display, "cursor" = whichever display the mouse is on,
+    /// "monitor:<name>@<w>x<h>+<x>+<y>" = one display in particular (see island::monitor_id).
     pub screen: String,
     pub autostart: bool,
     pub hooks_installed: bool,

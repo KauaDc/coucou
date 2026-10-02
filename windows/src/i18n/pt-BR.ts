@@ -186,6 +186,9 @@ export const ptBR: Record<keyof typeof en, string> = {
   "settings.general.screen": "Tela da ilha",
   "settings.general.screenMain": "Tela principal",
   "settings.general.screenCursor": "Tela sob o cursor",
+  "settings.general.screenMonitor": "Monitor {n} — {w}×{h}",
+  "settings.general.screenPrimarySuffix": " (principal)",
+  "settings.general.screenMissing": "Monitor desconectado",
   "settings.general.autostart": "Abrir ao iniciar o Windows",
   "settings.privacy": "Sem telemetria. Requisições de rede só vão para os serviços que você mesmo configura.",
 };

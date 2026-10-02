@@ -168,7 +168,59 @@ fn monitor_contains(m: &Monitor, x: f64, y: f64) -> bool {
         && y < (p.y + s.height as i32) as f64
 }
 
-/// The display the island lives on: the primary one, or the one under the cursor.
+/// Physical geometry of a display: (x, y, width, height).
+type Geometry = (i32, i32, u32, u32);
+
+fn geometry(m: &Monitor) -> Geometry {
+    let p = m.position();
+    let s = m.size();
+    (p.x, p.y, s.width, s.height)
+}
+
+pub fn same_monitor(a: &Monitor, b: &Monitor) -> bool {
+    geometry(a) == geometry(b)
+}
+
+/// The value stored in `settings.screen` to pin the island to this display:
+/// `monitor:\\.\DISPLAY2@2560x1440+1920+0`. The geometry rides along because
+/// Windows renumbers displays after a driver update or a port swap.
+pub fn monitor_id(m: &Monitor) -> String {
+    let (x, y, w, h) = geometry(m);
+    let name = m.name().map(String::as_str).unwrap_or("");
+    format!("monitor:{name}@{w}x{h}+{x}+{y}")
+}
+
+/// `monitor:<name>@<w>x<h>+<x>+<y>` → (name, (x, y, w, h)). `None` when the
+/// geometry part is missing or malformed — the name alone is still usable.
+fn parse_monitor_pref(pref: &str) -> Option<(&str, Option<Geometry>)> {
+    let rest = pref.strip_prefix("monitor:")?;
+    let Some((name, geo)) = rest.rsplit_once('@') else { return Some((rest, None)) };
+    let parsed = (|| {
+        let (w, rest) = geo.split_once('x')?;
+        let mut parts = rest.splitn(3, '+');
+        let h = parts.next()?.parse().ok()?;
+        let x = parts.next()?.parse().ok()?;
+        let y = parts.next()?.parse().ok()?;
+        Some((x, y, w.parse().ok()?, h))
+    })();
+    Some((name, parsed))
+}
+
+/// The display a `monitor:` preference points at: same name and geometry, else
+/// same name, else same geometry. `None` when it is not connected.
+fn find_pinned<'a>(monitors: &'a [Monitor], pref: &str) -> Option<&'a Monitor> {
+    let (name, geo) = parse_monitor_pref(pref)?;
+    let named = |m: &&Monitor| !name.is_empty() && m.name().map(String::as_str) == Some(name);
+    let placed = |m: &&Monitor| geo == Some(geometry(m));
+    monitors
+        .iter()
+        .find(|m| named(m) && placed(m))
+        .or_else(|| monitors.iter().find(named))
+        .or_else(|| monitors.iter().find(placed))
+}
+
+/// The display the island lives on: the primary one, the one under the cursor,
+/// or the one the user pinned it to (the primary one while that is unplugged).
 fn target_monitor(app: &AppHandle, pref: &str) -> Option<Monitor> {
     let monitors = app.available_monitors().ok()?;
     if pref == "cursor" {
@@ -178,10 +230,60 @@ fn target_monitor(app: &AppHandle, pref: &str) -> Option<Monitor> {
             }
         }
     }
+    if pref.starts_with("monitor:") {
+        if let Some(m) = find_pinned(&monitors, pref) {
+            return Some(m.clone());
+        }
+    }
     app.primary_monitor()
         .ok()
         .flatten()
         .or_else(|| monitors.into_iter().next())
+}
+
+/// Physical rect (x, y, w, h) of the wake strip at the top centre of `m`.
+pub fn strip_rect(m: &Monitor) -> Geometry {
+    let scale = m.scale_factor();
+    let (mx, my, mw, _) = geometry(m);
+    let w = (STRIP_W * scale).round().max(1.0) as u32;
+    let h = (STRIP_H * scale).round().max(1.0) as u32;
+    (mx + (mw as i32 - w as i32) / 2, my, w, h)
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MonitorInfo {
+    pub id: String,
+    pub primary: bool,
+    pub x: i32,
+    pub y: i32,
+    /// Physical pixels — "2560×1440" is what people recognise.
+    pub width: u32,
+    pub height: u32,
+    pub scale: f64,
+}
+
+/// Connected displays, left to right then top to bottom.
+pub fn list_monitors(app: &AppHandle) -> Vec<MonitorInfo> {
+    let Ok(monitors) = app.available_monitors() else { return Vec::new() };
+    let primary = app.primary_monitor().ok().flatten();
+    let mut list: Vec<MonitorInfo> = monitors
+        .iter()
+        .map(|m| {
+            let (x, y, width, height) = geometry(m);
+            MonitorInfo {
+                id: monitor_id(m),
+                primary: primary.as_ref().is_some_and(|p| same_monitor(p, m)),
+                x,
+                y,
+                width,
+                height,
+                scale: m.scale_factor(),
+            }
+        })
+        .collect();
+    list.sort_by_key(|m| (m.x, m.y));
+    list
 }
 
 pub fn screen_info(app: &AppHandle, pref: &str) -> ScreenInfo {
@@ -203,25 +305,27 @@ pub fn screen_info(app: &AppHandle, pref: &str) -> ScreenInfo {
 }
 
 /// Places and sizes the window. `collapsed` picks the wake strip instead of the panel.
-pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
-    let Some(win) = window(app) else { return };
-    let Some(m) = target_monitor(app, pref) else { return };
+/// Returns the display it went to.
+pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) -> Option<Monitor> {
+    let win = window(app)?;
+    let m = target_monitor(app, pref)?;
 
-    let scale = m.scale_factor();
-    let mp = *m.position();
-    let ms = *m.size();
-
-    let (lw, lh) = if collapsed { (STRIP_W, STRIP_H) } else { (PANEL_W, PANEL_H) };
-    let pw = (lw * scale).round().max(1.0) as u32;
-    let ph = (lh * scale).round().max(1.0) as u32;
-    let x = mp.x + (ms.width as i32 - pw as i32) / 2;
-    let y = mp.y;
+    let (x, y, pw, ph) = if collapsed {
+        strip_rect(&m)
+    } else {
+        let scale = m.scale_factor();
+        let (mx, my, mw, _) = geometry(&m);
+        let pw = (PANEL_W * scale).round().max(1.0) as u32;
+        let ph = (PANEL_H * scale).round().max(1.0) as u32;
+        (mx + (mw as i32 - pw as i32) / 2, my, pw, ph)
+    };
 
     let _ = win.set_size(PhysicalSize::new(pw, ph));
     let _ = win.set_position(PhysicalPosition::new(x, y));
     // Moving across displays can rescale the window: re-assert the physical size.
     let _ = win.set_size(PhysicalSize::new(pw, ph));
     let _ = win.set_always_on_top(true);
+    Some(m)
 }
 
 fn hwnd_of(win: &WebviewWindow) -> Option<HWND> {
@@ -298,6 +402,7 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                         if !first {
                             crate::log::line("display layout changed — repositioning".to_string());
                             let _ = app.emit_to(WINDOW_LABEL, "screen-changed", ());
+                            let _ = app.emit("monitors-changed", ());
                         }
                     }
                 }

@@ -185,6 +185,9 @@ export const en = {
   "settings.general.screen": "Island lives on",
   "settings.general.screenMain": "Main display",
   "settings.general.screenCursor": "Display under the cursor",
+  "settings.general.screenMonitor": "Display {n} — {w}×{h}",
+  "settings.general.screenPrimarySuffix": " (main)",
+  "settings.general.screenMissing": "Disconnected display",
   "settings.general.autostart": "Launch at startup",
   "settings.privacy": "No telemetry. Network requests only go to the services you configure yourself.",
 } as const;

@@ -48,6 +48,9 @@ export const Bridge = {
 
   reposition: () => call<void>("reposition"),
 
+  /** Connected displays, left to right, for the "Island lives on" picker. */
+  listMonitors: () => call<MonitorInfo[]>("list_monitors"),
+
   openUrl: (url: string) => call<void>("open_url", { url }),
 
   /** "Open terminal" → opens the folder in VS Code when `code` is on PATH. */
@@ -110,6 +113,18 @@ export type ChatContext =
   | { kind: "file"; name: string; path: string }
   | { kind: "window"; appName: string; title: string; url?: string };
 
+export interface MonitorInfo {
+  /** The value to store in `settings.screen` to pin the island there. */
+  id: string;
+  primary: boolean;
+  x: number;
+  y: number;
+  /** Physical pixels. */
+  width: number;
+  height: number;
+  scale: number;
+}
+
 export interface DroppedFile {
   name: string;
   path: string;
@@ -141,7 +156,10 @@ export type BridgeEvent =
   | { name: "cursor"; payload: { x: number; y: number } }
   | { name: "tray"; payload: string }
   | { name: "hook"; payload: Record<string, unknown> }
-  | { name: "screen-changed"; payload: null };
+  | { name: "screen-changed"; payload: null }
+  | { name: "monitors-changed"; payload: null }
+  /** The cursor touched a wake strip on another display. */
+  | { name: "wake"; payload: null };
 
 export interface DragDropPayload {
   type: "enter" | "over" | "drop" | "leave";
