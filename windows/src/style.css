@@ -126,11 +126,17 @@ body {
   cursor: pointer;
 }
 
-/* The ordinary views step aside while the sequence owns the body. */
+/* The ordinary views step aside while the sequence owns the body. The active
+   view sets pointer-events back to auto, which beats the parent's none: it has
+   to be switched off too, or its invisible card swallows the canvas buttons. */
 #views.hidden-by-upload {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.22s ease-in-out;
+}
+
+#views.hidden-by-upload .view.on {
+  pointer-events: none;
 }
 
 #bot-glow {
@@ -774,6 +780,27 @@ input[type="range"]::-webkit-slider-thumb {
 .chip.settled {
   border-color: rgba(255, 255, 255, 0);
   transform: scale(1);
+}
+
+.chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-right: -5px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+  transition: background 0.15s ease-out, color 0.15s ease-out;
+}
+
+.chip-remove:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--ink);
 }
 
 .chip-dot {

@@ -14,6 +14,7 @@ mod secrets;
 mod settings;
 mod tray;
 mod wake_strips;
+mod webview_drop;
 mod win_user;
 
 use std::os::windows::process::CommandExt;
@@ -459,6 +460,7 @@ pub fn run() {
 
             if let Some(win) = island::window(&handle) {
                 island::make_non_activating(&win);
+                webview_drop::install(&handle);
                 island::apply_geometry(&handle, &loaded.screen, false);
                 let _ = win.show();
             }

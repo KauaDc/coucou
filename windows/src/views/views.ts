@@ -15,6 +15,8 @@ import { t } from "../i18n";
 
 export interface ViewActions {
   setView(v: IslandViewName): void;
+  /** "Cancel" on a dropped file: forgets it and goes back home. */
+  cancelDrop(): void;
   collapse(): void;
   setFocus(id: string): void;
   openTerminal(): void;

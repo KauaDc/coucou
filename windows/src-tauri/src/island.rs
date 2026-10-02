@@ -120,24 +120,22 @@ fn cursor_physical() -> Option<(f64, f64)> {
     Some((p.x as f64, p.y as f64))
 }
 
-/// Lets dropped files reach the app again.
+/// Keeps the settings window from showing the "no drop" cursor.
 ///
 /// wry installs its drop target by walking the webview's child windows **once**,
 /// when the webview is created. WebView2 creates `Chrome_RenderWidgetHostHWND`
 /// later and registers its own target on it; being the innermost window, that one
-/// wins, and since the page has no HTML5 drop handler it refuses everything — the
-/// "no drop" cursor, with nothing reaching Tauri. Revoking it makes OLE fall
-/// through to the target wry registered on the parent widget, which is the one
-/// that feeds Tauri's drag events.
+/// wins, and since the page has no HTML5 drop handler it refuses everything.
+/// Revoking it makes OLE fall through to wry's target. The island is the other
+/// way round: it takes drops through WebView2's own target (see webview_drop.rs),
+/// so its windows are left alone.
 ///
 /// Cheap and idempotent, so it is simply re-run whenever a drag might be starting.
 pub fn unblock_webview_drops(app: &AppHandle) {
-    for label in [WINDOW_LABEL, "settings"] {
-        let Some(win) = app.get_webview_window(label) else { continue };
-        let Some(hwnd) = hwnd_of(&win) else { continue };
-        unsafe {
-            let _ = EnumChildWindows(Some(hwnd), Some(revoke_render_widget), LPARAM(0));
-        }
+    let Some(win) = app.get_webview_window("settings") else { return };
+    let Some(hwnd) = hwnd_of(&win) else { return };
+    unsafe {
+        let _ = EnumChildWindows(Some(hwnd), Some(revoke_render_widget), LPARAM(0));
     }
 }
 

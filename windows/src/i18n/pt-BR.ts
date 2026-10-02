@@ -59,6 +59,7 @@ export const ptBR: Record<keyof typeof en, string> = {
   "chat.placeholder": "Pergunte qualquer coisa…",
   "chat.continue": "Continuar…",
   "chat.send": "Enviar",
+  "chat.removeFile": "Remover arquivo",
 
   // Upload
   "upload.dropHere": "Solte seus arquivos aqui",

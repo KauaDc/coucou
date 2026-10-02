@@ -102,7 +102,7 @@ export function buildChoose(actions: ViewActions): ViewHost {
     h("button", {
       class: "btn secondary",
       text: t("upload.cancel"),
-      onclick: () => actions.setView(State.defaultView()),
+      onclick: () => actions.cancelDrop(),
     }),
   );
   const el = h(

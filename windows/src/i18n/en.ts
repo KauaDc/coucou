@@ -58,6 +58,7 @@ export const en = {
   "chat.placeholder": "Ask me anything…",
   "chat.continue": "Continue…",
   "chat.send": "Send",
+  "chat.removeFile": "Remove file",
 
   // Upload
   "upload.dropHere": "Drop your files here",
