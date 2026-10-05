@@ -1,8 +1,11 @@
 // Coucou for Windows — app wiring and the commands the island calls.
 
+mod chat;
 mod claude;
 mod files;
+mod gemini;
 mod hooks;
+mod i18n;
 mod integrations;
 mod island;
 mod log;
@@ -11,6 +14,10 @@ mod platform;
 mod secrets;
 mod settings;
 mod tray;
+#[cfg(windows)]
+mod wake_strips;
+#[cfg(windows)]
+mod webview_drop;
 
 use std::process::Command;
 use std::sync::atomic::Ordering;
@@ -20,10 +27,10 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 
-use claude::{Chat, ChatContext, ChatReply};
+use chat::{Chat, ChatContext, ChatReply};
 use files::DroppedFile;
 use hooks::{HookPreview, HookStatus};
-use island::{PollGate, ScreenInfo};
+use island::{MonitorInfo, PollGate, ScreenInfo};
 use pipe::Pending;
 use settings::Settings;
 
@@ -60,14 +67,20 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
 }
 
 #[tauri::command]
-fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
-    let (screen_changed, autostart_changed) = {
+fn save_settings(app: AppHandle, shared: State<Shared>, chat: State<Chat>, settings: Settings) {
+    let (screen_changed, autostart_changed, provider_changed) = {
         let mut current = shared.settings.lock().unwrap();
         let screen_changed = current.screen != settings.screen;
         let autostart_changed = current.autostart != settings.autostart;
+        let provider_changed = current.chat_provider != settings.chat_provider;
         *current = settings.clone();
-        (screen_changed, autostart_changed)
+        (screen_changed, autostart_changed, provider_changed)
     };
+    // Claude and Gemini histories are not interchangeable: start over. The island
+    // clears its own copy when it sees the new provider in settings-changed.
+    if provider_changed {
+        chat.reset();
+    }
     if let Err(err) = settings::save(&settings) {
         eprintln!("[coucou] could not save settings: {err}");
     }
@@ -80,7 +93,7 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
     }
     if screen_changed {
         let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
-        island::apply_geometry(&app, &settings.screen, collapsed);
+        place_island(&app, &settings.screen, collapsed);
     }
     // Keep the other window in step (island ⇄ settings window).
     let _ = app.emit("settings-changed", settings);
@@ -92,7 +105,7 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
 fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
     let pref = shared.settings.lock().unwrap().screen.clone();
     shared.gate.collapsed.store(collapsed, Ordering::Relaxed);
-    island::apply_geometry(&app, &pref, collapsed);
+    place_island(&app, &pref, collapsed);
     // The wake strip must always take the mouse, and a resize invalidates the flag.
     island::refresh_click_through(&app, &shared.gate);
     shared.gate.set_active(!collapsed);
@@ -121,7 +134,27 @@ fn focus_window(app: AppHandle, focused: bool) {
 fn reposition(app: AppHandle, shared: State<Shared>) {
     let pref = shared.settings.lock().unwrap().screen.clone();
     let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
-    island::apply_geometry(&app, &pref, collapsed);
+    place_island(&app, &pref, collapsed);
+}
+
+/// Connected displays, for the "Island lives on" picker.
+#[tauri::command]
+fn list_monitors(app: AppHandle) -> Vec<MonitorInfo> {
+    island::list_monitors(&app)
+}
+
+/// Places the island window and, when it is hidden in "display under the cursor"
+/// mode, a wake strip on every other display so it can be woken from any of them.
+pub(crate) fn place_island(app: &AppHandle, pref: &str, collapsed: bool) {
+    let host = island::apply_geometry(app, pref, collapsed);
+    #[cfg(windows)]
+    if collapsed && pref == "cursor" {
+        wake_strips::show_except(app, host);
+    } else {
+        wake_strips::hide_all(app);
+    }
+    #[cfg(not(windows))]
+    let _ = host;
 }
 
 #[tauri::command]
@@ -216,6 +249,12 @@ fn approval_decision(app: AppHandle, request_id: String, decision: String) {
     pipe::answer(&app, &request_id, &decision);
 }
 
+/// Answers to an `AskUserQuestion` card — only ever sent from a click.
+#[tauri::command]
+fn question_answer(app: AppHandle, request_id: String, answers: serde_json::Map<String, serde_json::Value>) {
+    pipe::answer_questions(&app, &request_id, answers);
+}
+
 /// The island has the card on screen, so the long wait for a human may begin.
 /// Until this arrives the relay only waits a few hundred milliseconds, which is
 /// what stops a paused or unresponsive island from freezing Claude Code.
@@ -233,7 +272,8 @@ fn approval_decline(app: AppHandle, request_id: String) {
 
 // ── Chat, files and secrets ───────────────────────────────────────────────────
 
-/// One chat turn. The API key and any file bytes stay on the Rust side.
+/// One chat turn, on the provider picked in the settings. The API key and any
+/// file bytes stay on the Rust side.
 #[tauri::command]
 async fn chat_send(
     shared: State<'_, Shared>,
@@ -241,8 +281,8 @@ async fn chat_send(
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
-    let model = shared.settings.lock().unwrap().model.clone();
-    claude::send(&chat, &model, query, context).await
+    let settings = shared.settings.lock().unwrap().clone();
+    chat::send(&chat, &settings, query, context).await
 }
 
 #[tauri::command]
@@ -286,6 +326,18 @@ async fn refresh_integration(app: AppHandle, id: String) {
     integrations::poll_once(app, &id).await;
 }
 
+/// Start / stop / restart buttons in the Discloud card — only ever from a click.
+#[tauri::command]
+async fn discloud_action(app: AppHandle, app_id: String, action: String) -> integrations::DiscloudActionResult {
+    integrations::discloud_action(app, app_id, action).await
+}
+
+/// Logs shown in the Discloud detail, fetched when it opens.
+#[tauri::command]
+async fn discloud_logs(app: AppHandle, app_id: String) -> Result<integrations::DiscloudLogs, String> {
+    integrations::discloud_logs(app, app_id).await
+}
+
 /// Lets the island write to the same log as the Rust side.
 #[tauri::command]
 fn log_line(message: String) {
@@ -321,7 +373,7 @@ fn create_settings_window(app: &AppHandle) {
     let url = settings_page_url(app);
     match WebviewWindowBuilder::new(app, "settings", url)
         .additional_browser_args(BROWSER_ARGS)
-        .title("Settings — Coucou")
+        .title(i18n::t("Settings — Coucou", "Ajustes — Coucou"))
         .inner_size(560.0, 680.0)
         .min_inner_size(460.0, 480.0)
         .resizable(true)
@@ -381,6 +433,7 @@ pub fn run() {
             set_island_rect,
             focus_window,
             reposition,
+            list_monitors,
             open_url,
             open_in_vscode,
             quit_app,
@@ -388,6 +441,7 @@ pub fn run() {
             hooks_preview,
             hooks_apply,
             approval_decision,
+            question_answer,
             approval_ack,
             approval_decline,
             log_line,
@@ -398,6 +452,8 @@ pub fn run() {
             secret_set,
             secret_clear,
             refresh_integration,
+            discloud_action,
+            discloud_logs,
             open_n8n,
             open_settings_window,
             set_paused,
@@ -410,6 +466,8 @@ pub fn run() {
 
             if let Some(win) = island::window(&handle) {
                 platform::make_non_activating(&win);
+                #[cfg(windows)]
+                webview_drop::install(&handle);
                 island::apply_geometry(&handle, &loaded.screen, false);
                 let _ = win.show();
             }

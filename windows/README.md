@@ -51,6 +51,17 @@ Everything else happens on its own: a Claude Code permission request opens the
 island with **Deny / Allow**, a finished session shows what it did, and
 your integrations sit in the coloured pills next to Mochi.
 
+### Several displays
+
+**Settings… → General → Island lives on** picks the display:
+
+- **Main display** (default) — always the main one.
+- **Display under the cursor** — the island opens on whichever display the mouse
+  is on. While it is hidden, the top centre of *every* display wakes it, so it
+  comes out wherever you are.
+- **Display N — W×H** — pinned to one display. If that display is unplugged the
+  island falls back to the main one, and goes back as soon as it returns.
+
 ## Claude Code
 
 <img src="screenshots/settings.png" width="562" alt="The settings window">
@@ -70,7 +81,9 @@ It works from any terminal — Windows Terminal, PowerShell, VS Code, Git Bash.
 
 ## Chat and keys
 
-**Settings… → Claude** takes your Anthropic API key. Keys live in the **Windows
+**Settings… → Chat** picks the provider — **Claude** (Anthropic API key) or
+**Gemini** (Google AI Studio key) — and its model. Each provider keeps its own
+key; switching provider starts a new conversation. Keys live in the **Windows
 Credential Manager**, never on disk and never in the interface — the island can
 only ask whether a key exists. Same for every integration key.
 
@@ -146,6 +159,10 @@ problems. It stays on your machine.
   attach it as context, and jumping to a specific terminal window — "Open
   terminal" opens the working folder in VS Code when `code` is on your `PATH`.
 - Cal.com shows the next bookings as a list rather than the Mac's calendar.
+- Discloud is Windows-only: the card lists your apps (online/offline, CPU, RAM),
+  alerts when one goes down or comes back, shows its recent logs, and has Start,
+  Stop and Restart buttons. Stop and Restart need a second click; nothing is sent
+  without one. Paste the API token from the Discloud dashboard in Settings.
 
 ## Linux
 

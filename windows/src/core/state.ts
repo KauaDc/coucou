@@ -28,6 +28,35 @@ export interface ApprovalInfo {
   command: string;
 }
 
+/** One choice of an `AskUserQuestion` question. */
+export interface QuestionOption {
+  label: string;
+  description: string;
+}
+
+/** One question of an `AskUserQuestion` call, as Claude Code sends it. */
+export interface AskQuestion {
+  question: string;
+  header: string;
+  options: QuestionOption[];
+  multiSelect: boolean;
+}
+
+/** An `AskUserQuestion` card: 1–4 questions, answered one after the other. */
+export interface PendingQuestion {
+  requestId: string;
+  sessionId: string;
+  questions: AskQuestion[];
+  /** The question on screen. */
+  index: number;
+  /** Option indices picked, per question. */
+  picked: number[][];
+  /** The user's own words, per question — replaces the picked options. */
+  custom: (string | null)[];
+  /** The "Other…" field is open on the current question. */
+  typing: boolean;
+}
+
 export interface ChatMessage {
   id: number;
   role: "user" | "assistant";
@@ -66,11 +95,12 @@ export const INTEGRATION_AGENTS: AgentTask[] = [
   task("integration_notion", "Notion", "#8C8C8C", "n8n"),
   task("integration_calcom", "Cal.com", "#C9956A", "n8n"),
   task("integration_stripe", "Stripe", "#0570DE", "n8n"),
+  task("integration_discloud", "Discloud", "#14B8A6", "n8n"),
 ];
 
 export const TOGGLEABLE_INTEGRATION_IDS = [
   "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
-  "integration_notion", "integration_calcom", "integration_stripe",
+  "integration_notion", "integration_calcom", "integration_stripe", "integration_discloud",
 ];
 
 /** What an integration poller last reported. */
@@ -87,11 +117,23 @@ export interface Settings {
   autoCloseInterval: number;
   absenceInterval: number;
   activeIntegrations: string[];
-  screen: "primary" | "cursor";
+  /** "monitor:<name>@<w>x<h>+<x>+<y>" pins the island to one display (see list_monitors). */
+  screen: "primary" | "cursor" | `monitor:${string}`;
   autostart: boolean;
   hooksInstalled: boolean;
+  /** Which API the chat talks to. */
+  chatProvider: ChatProvider;
   /** Claude model used by the chat. */
   model: string;
+  /** Gemini model used by the chat. */
+  geminiModel: string;
+}
+
+export type ChatProvider = "anthropic" | "gemini";
+
+/** Short name of the chat provider, as shown in the island ("Ask Gemini"). */
+export function providerLabel(provider: ChatProvider): string {
+  return provider === "gemini" ? "Gemini" : "Claude";
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -105,7 +147,9 @@ export const DEFAULT_SETTINGS: Settings = {
   screen: "primary",
   autostart: false,
   hooksInstalled: false,
+  chatProvider: "anthropic",
   model: "claude-opus-5",
+  geminiModel: "gemini-3.8-flash",
 };
 
 type Listener = () => void;
@@ -137,6 +181,7 @@ class AppState {
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
   pendingApproval: ApprovalInfo | null = null;
+  pendingQuestion: PendingQuestion | null = null;
 
   integrations: Record<string, IntegrationInfo> = {};
 

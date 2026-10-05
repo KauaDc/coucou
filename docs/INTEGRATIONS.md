@@ -260,6 +260,14 @@ Permissions : Enregistrement de l'écran (capture) et Automatisation (navigateur
 - Erreur réseau ou clé invalide : état `error`, vue `note` avec la raison en une phrase et « Ouvre les réglages pour vérifier la clé ».
 - Micro (bouton du champ) : dictée `SFSpeechRecognizer` en `fr-FR`, sur l'appareil si possible. Optionnel (M9). Si la permission est refusée, masquer le bouton.
 
+### 5 bis. Gemini (Windows uniquement)
+
+- Réglages → Chat : fournisseur `anthropic` (défaut) ou `gemini`, une clé par fournisseur (`anthropic-api-key`, `gemini-api-key`) et un modèle par fournisseur (`model`, `geminiModel`).
+- `POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`, clé dans l'en-tête `x-goog-api-key` (jamais dans l'URL), `systemInstruction`, outil `google_search`, fichiers en `inlineData`.
+- L'historique garde le `content` du modèle tel quel (les `thoughtSignature` de Gemini 3 sont vérifiées au tour suivant). Changer de fournisseur remet la conversation à zéro.
+- Refus : `promptFeedback.blockReason` ou `finishReason` SAFETY / PROHIBITED_CONTENT / BLOCKLIST / SPII / RECITATION.
+- Détails : `docs/specs/SPEC_chat-multi-provider-windows.md`.
+
 ---
 
 ## 5bis. Autres fournisseurs du chat (Google AI, OpenAI)
@@ -333,4 +341,14 @@ Réglages → Chat → Local models → **Disconnect**. Efface l'URL sauvegardé
 
 Aucune permission Accessibilité nécessaire.
 
+---
 
+## 8. Discloud (Windows uniquement)
+
+Spec complète : `docs/specs/SPEC_discloud-windows.md`. Code : `windows/src-tauri/src/integrations.rs` (section Discloud) et `windows/src/views/integrations.ts`.
+
+- Réglages : jeton d'API Discloud (Gestionnaire d'identifiants, clé `discloud-token`). Le jeton se récupère dans le tableau de bord Discloud ou avec la commande `.api` de leur bot. Intégration désactivée par défaut.
+- API v2 `https://api.discloud.app/v2`, header `api-token`. Polling toutes les 60 s (limite de débit non documentée) : `GET /app/all` (nom, en ligne) + `GET /app/all/status` (CPU, RAM). Une 429 saute le cycle suivant.
+- Mapping : le premier poll remplit la carte sans son ; une app qui passe hors ligne → alerte `error` (« Ficou offline », « Sem memória » si `ramKilled`, ou le code de sortie) ; une app qui revient → `finished`. Plusieurs changements dans un cycle → une seule alerte, la panne l'emporte.
+- Boutons, **uniquement au clic** : « Iniciar » (`PUT /app/{id}/start`), « Parar » et « Reiniciar » (`/stop`, `/restart`) avec confirmation par un second clic sous 4 s. La chute provoquée par l'utilisateur ne sonne pas (silence de 3 min pour cette app). Refusé si l'app est en pause ou l'intégration désactivée ; `appId` validé, jamais `all`.
+- Journaux : `GET /app/{id}/logs` à l'ouverture du détail et sur « Atualizar logs » ; 200 dernières lignes / 32 Ko, affichés dans l'île, jamais écrits dans le log de l'app.

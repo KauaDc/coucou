@@ -11,19 +11,23 @@
 //   * we only wait for a human once the island has *confirmed* the card is on
 //     screen, so a paused island or a webview that is not listening costs a few
 //     hundred milliseconds, not two minutes;
-//   * whatever happens we drop the connection after the decision timeout, and
-//     the terminal takes over.
+//   * Claude Code shows the same prompt in the terminal while the hook waits and
+//     takes whichever answer comes first, so the long wait for a human has no
+//     deadline: it ends with a click, a decline, or the relay going away (the
+//     terminal won, or the session closed) — which we notice and pass on to the
+//     island as `hook-cancelled`, so no card is left behind.
 //
-// What we write back is the bare word `allow` or `deny`. Turning that into the
-// documented hookSpecificOutput JSON is coucou-hook's job, so the wire format
-// Claude Code expects lives in exactly one place.
+// What we write back is the bare word `allow` or `deny`, or `answers {…}` for an
+// `AskUserQuestion`. Turning that into the documented hookSpecificOutput JSON is
+// coucou-hook's job, so the wire format Claude Code expects lives in exactly one
+// place.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 #[cfg(windows)]
@@ -33,8 +37,6 @@ use tokio::sync::mpsc;
 use crate::island::WINDOW_LABEL;
 use crate::log;
 
-/// Slightly under coucou-hook's own 110 s wait, so we always answer first.
-const DECISION_TIMEOUT: Duration = Duration::from_secs(108);
 /// How long the island gets to say "the card is up". This is the whole of B4:
 /// without it, an island that is paused, hidden behind a crashed webview or
 /// simply not listening would leave Claude Code staring at a prompt nobody can
@@ -46,7 +48,7 @@ const MAX_PAYLOAD: usize = 1 << 20;
 pub enum Reply {
     /// The card is on screen and a human can act on it.
     Ack,
-    /// A human clicked: `allow` or `deny`.
+    /// A human clicked: `allow`, `deny` or `answers {…}`.
     Decision(String),
     /// Nobody can act on it — paused, or another request already holds the card.
     Decline,
@@ -212,50 +214,98 @@ async fn handle(app: AppHandle, mut pipe: impl Relay) {
     log::line(format!("hook PermissionRequest id={id}"));
     let _ = app.emit_to(WINDOW_LABEL, "hook", payload);
 
-    let decision = wait_for_decision(&id, &mut rx).await;
+    let outcome = wait_for_decision(&id, &mut rx, &mut pipe).await;
     app.state::<Pending>().0.lock().unwrap().remove(&id);
 
-    // No decision: say nothing at all. coucou-hook then writes nothing to stdout
-    // and Claude Code asks in the terminal, exactly as if Coucou were closed.
-    if let Some(d) = decision {
-        let _ = pipe.write_all(format!("{d}\n").as_bytes()).await;
-        let _ = pipe.flush().await;
+    match outcome {
+        Outcome::Decision(d) => {
+            let _ = pipe.write_all(format!("{d}\n").as_bytes()).await;
+            let _ = pipe.flush().await;
+        }
+        // No decision: say nothing at all. coucou-hook then writes nothing to
+        // stdout and the terminal's own prompt stands, as if Coucou were closed.
+        Outcome::Released => {}
+        // The relay is gone, so the terminal already has the answer. The card on
+        // the island is now asking about something that no longer exists.
+        Outcome::Gone => {
+            let _ = app.emit_to(WINDOW_LABEL, "hook-cancelled", json!({ "request_id": id }));
+        }
     }
     pipe.finish();
 }
 
-/// Two waits: a short one for "the card is up", then the long one for a human.
-async fn wait_for_decision(id: &str, rx: &mut mpsc::Receiver<Reply>) -> Option<String> {
+enum Outcome {
+    Decision(String),
+    /// Declined or never acknowledged: the island already knows.
+    Released,
+    /// coucou-hook disconnected while the card was up.
+    Gone,
+}
+
+/// What a decision looks like in the log: never the content of an answer.
+fn describe(decision: &str) -> String {
+    match decision.strip_prefix("answers ") {
+        Some(raw) => {
+            let n = serde_json::from_str::<Value>(raw)
+                .ok()
+                .and_then(|v| v.as_object().map(|m| m.len()))
+                .unwrap_or(0);
+            format!("{n} answer(s)")
+        }
+        None => decision.to_string(),
+    }
+}
+
+/// Two waits: a short one for "the card is up", then the long one for a human,
+/// which lasts until a click, a decline, or coucou-hook hanging up.
+async fn wait_for_decision(
+    id: &str,
+    rx: &mut mpsc::Receiver<Reply>,
+    pipe: &mut impl Relay,
+) -> Outcome {
     match tokio::time::timeout(ACK_TIMEOUT, rx.recv()).await {
         Ok(Some(Reply::Ack)) => {}
         // A click that beats the ack is still a click.
         Ok(Some(Reply::Decision(d))) => {
-            log::line(format!("hook id={id} answered {d}"));
-            return Some(d);
+            log::line(format!("hook id={id} answered {}", describe(&d)));
+            return Outcome::Decision(d);
         }
         Ok(Some(Reply::Decline)) => {
             log::line(format!("hook id={id} not shown — terminal takes over"));
-            return None;
+            return Outcome::Released;
         }
-        Ok(None) => return None,
+        Ok(None) => return Outcome::Released,
         Err(_) => {
             log::line(format!("hook id={id} island never acknowledged — terminal takes over"));
-            return None;
+            return Outcome::Released;
         }
     }
 
-    match tokio::time::timeout(DECISION_TIMEOUT, rx.recv()).await {
-        Ok(Some(Reply::Decision(d))) => {
-            log::line(format!("hook id={id} answered {d}"));
-            Some(d)
-        }
-        Ok(Some(Reply::Decline)) => {
-            log::line(format!("hook id={id} released without a decision"));
-            None
-        }
-        _ => {
-            log::line(format!("hook id={id} timed out — terminal takes over"));
-            None
+    // coucou-hook never writes after its payload, so the only thing a read can
+    // ever return here is end-of-file or an error: the relay has hung up.
+    let mut probe = [0u8; 1];
+    loop {
+        tokio::select! {
+            reply = rx.recv() => match reply {
+                Some(Reply::Decision(d)) => {
+                    log::line(format!("hook id={id} answered {}", describe(&d)));
+                    return Outcome::Decision(d);
+                }
+                Some(Reply::Decline) | None => {
+                    log::line(format!("hook id={id} released without a decision"));
+                    return Outcome::Released;
+                }
+                // A late duplicate ack changes nothing.
+                Some(Reply::Ack) => {}
+            },
+            read = pipe.read(&mut probe) => match read {
+                Ok(0) | Err(_) => {
+                    log::line(format!("hook id={id} relay hung up — terminal answered"));
+                    return Outcome::Gone;
+                }
+                // Stray bytes are ignored; keep waiting.
+                Ok(_) => {}
+            },
         }
     }
 }
@@ -294,4 +344,13 @@ pub fn answer(app: &AppHandle, request_id: &str, decision: &str) {
     };
     log::line(format!("decision id={request_id} {word}"));
     send(app, request_id, Reply::Decision(word.to_string()), false);
+}
+
+/// Called when the last question of an `AskUserQuestion` card is answered:
+/// question text → chosen label(s) or the user's own words. coucou-hook checks
+/// them against the questions it holds and builds Claude Code's JSON.
+pub fn answer_questions(app: &AppHandle, request_id: &str, answers: Map<String, Value>) {
+    log::line(format!("decision id={request_id} {} answer(s)", answers.len()));
+    let line = format!("answers {}", Value::Object(answers));
+    send(app, request_id, Reply::Decision(line), false);
 }

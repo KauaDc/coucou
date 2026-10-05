@@ -7,8 +7,10 @@ import { State, type Settings } from "./core/state";
 import { Island } from "./island/island";
 import { registerHookHandlers } from "./island/hooks";
 import { registerIntegrationHandlers, refreshConfigured } from "./island/integrations";
+import { applyDocumentLang } from "./i18n";
 
 async function main() {
+  applyDocumentLang();
   const root = document.getElementById("root");
   if (!root) return;
 
@@ -52,9 +54,13 @@ async function main() {
   });
 
   await onEvent<null>("screen-changed", () => void Bridge.reposition());
+  await onEvent<null>("wake", () => island.onWake());
 
   // The settings window writes preferences; apply them here without a restart.
   await onEvent<Settings>("settings-changed", (s) => {
+    // The Rust side already dropped its history; drop the bubbles too, since
+    // the new provider cannot continue the old conversation.
+    if (s.chatProvider !== State.settings.chatProvider) State.chatHistory = [];
     State.settings = { ...State.settings, ...s };
     island.applySettings();
     State.loadIntegrationTasks();

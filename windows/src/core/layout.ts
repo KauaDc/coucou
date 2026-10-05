@@ -97,10 +97,21 @@ export function chatPromptHeight(messageCount: number): number {
   return Math.min(300, 240 + messageCount * 40);
 }
 
+/**
+ * A question card with its choices laid out two per row. `optionCount` 0 means
+ * there is nothing to choose from (the read-only card), which keeps the
+ * standard height.
+ */
+export function questionHeight(optionCount: number): number {
+  if (optionCount <= 0) return VIEW_LAYOUTS.question.height;
+  return 176 + Math.ceil(optionCount / 2) * 42;
+}
+
 export function islandSize(
   mode: IslandMode,
   view: IslandViewName,
   chatCount = 0,
+  questionOptions = 0,
 ): { w: number; h: number } {
   switch (mode) {
     case "hidden":
@@ -110,7 +121,10 @@ export function islandSize(
     case "compact":
       return { w: COMPACT_W, h: NOTCH_H };
     case "expanded": {
-      const h = view === "prompt" ? chatPromptHeight(chatCount) : VIEW_LAYOUTS[view].height;
+      const h =
+        view === "prompt" ? chatPromptHeight(chatCount)
+        : view === "question" ? questionHeight(questionOptions)
+        : VIEW_LAYOUTS[view].height;
       return { w: EXPANDED_W, h };
     }
   }

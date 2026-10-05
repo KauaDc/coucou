@@ -7,6 +7,7 @@ import { Bridge, type ChatContext } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State, type ChatMessage } from "../core/state";
 import type { ViewHost } from "./views";
+import { t } from "../i18n";
 
 let nextId = 1;
 
@@ -30,8 +31,13 @@ function typingDots(): HTMLElement {
 }
 
 /** The coloured chip showing what the question is about (a dropped file). */
-function contextChip(label: string): HTMLElement {
-  const chip = h("div", { class: "chip" }, h("i", { class: "chip-dot" }), h("span", { text: label }));
+function contextChip(label: string, onRemove: () => void): HTMLElement {
+  const remove = h(
+    "button",
+    { class: "chip-remove", title: t("chat.removeFile"), onclick: onRemove },
+    svg(ICONS.xmark, 8),
+  );
+  const chip = h("div", { class: "chip" }, h("i", { class: "chip-dot" }), h("span", { text: label }), remove);
   requestAnimationFrame(() => chip.classList.add("settled"));
   return chip;
 }
@@ -42,10 +48,10 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   const input = h("input", {
     type: "text",
     class: "chat-input",
-    placeholder: "Ask me anything…",
+    placeholder: t("chat.placeholder"),
     spellcheck: "false",
   }) as HTMLInputElement;
-  const send = h("button", { class: "send-btn", title: "Send" }, svg(ICONS.arrowUp, 11));
+  const send = h("button", { class: "send-btn", title: t("chat.send") }, svg(ICONS.arrowUp, 11));
   const bar = h("div", { class: "chat-bar" }, input, send);
 
   const el = h(
@@ -92,6 +98,24 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     }
   }
 
+  /**
+   * The × on the chip. The file rides along with the first message, so once the
+   * conversation has started the model already has it: the conversation starts
+   * over too, or "removed" would not mean much.
+   */
+  function removeFile() {
+    if (sending) return;
+    State.droppedFile = null;
+    State.promptContext = null;
+    if (State.chatHistory.length > 0) {
+      State.chatHistory = [];
+      void Bridge.chatReset();
+    }
+    State.notify();
+    onHeightChange();
+    input.focus();
+  }
+
   send.addEventListener("click", () => void submit());
   input.addEventListener("keydown", (e) => {
     if ((e as KeyboardEvent).key === "Enter") {
@@ -109,7 +133,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       if (chipRow.dataset.label !== wantChip) {
         chipRow.dataset.label = wantChip;
         clear(chipRow);
-        if (wantChip) chipRow.append(contextChip(wantChip));
+        if (wantChip) chipRow.append(contextChip(wantChip, removeFile));
       }
 
       const thinking = State.stateOverride === "thinking";
@@ -122,7 +146,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
         log.scrollTop = log.scrollHeight;
       }
 
-      input.placeholder = State.chatHistory.length === 0 ? "Ask me anything…" : "Continue…";
+      input.placeholder = State.chatHistory.length === 0 ? t("chat.placeholder") : t("chat.continue");
       input.disabled = sending;
     },
     focus() {

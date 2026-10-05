@@ -4,7 +4,6 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { Settings } from "./state";
 
 export const IS_TAURI =
@@ -50,6 +49,9 @@ export const Bridge = {
 
   reposition: () => call<void>("reposition"),
 
+  /** Connected displays, left to right, for the "Island lives on" picker. */
+  listMonitors: () => call<MonitorInfo[]>("list_monitors"),
+
   openUrl: (url: string) => call<void>("open_url", { url }),
 
   /** "Open terminal" → opens the folder in VS Code when `code` is on PATH. */
@@ -75,6 +77,9 @@ export const Bridge = {
 
   approvalDecision: (requestId: string, decision: "allow" | "deny") =>
     call<void>("approval_decision", { requestId, decision }),
+  /** An `AskUserQuestion` card answered: question text → label(s) or own words. */
+  questionAnswer: (requestId: string, answers: Record<string, string>) =>
+    call<void>("question_answer", { requestId, answers }),
   /** "The card is up" — until this lands the relay only waits a moment. */
   approvalAck: (requestId: string) => call<void>("approval_ack", { requestId }),
   /** "Nobody can act on this" — Claude Code asks in the terminal right away. */
@@ -94,6 +99,11 @@ export const Bridge = {
 
   // ── Integrations ──────────────────────────────────────────────────────────
   refreshIntegration: (id: string) => call<void>("refresh_integration", { id }),
+  /** Start / stop / restart a Discloud app — only ever from a click. */
+  discloudAction: (appId: string, action: "start" | "stop" | "restart") =>
+    call<{ ok: boolean; message: string }>("discloud_action", { appId, action }),
+  discloudLogs: (appId: string) =>
+    callOrThrow<{ text: string; url: string | null }>("discloud_logs", { appId }),
   /** Opens the configured n8n instance in the browser. */
   openN8n: () => call<void>("open_n8n"),
 
@@ -112,6 +122,18 @@ export type ChatContext =
   | { kind: "file"; name: string; path: string }
   | { kind: "window"; appName: string; title: string; url?: string };
 
+export interface MonitorInfo {
+  /** The value to store in `settings.screen` to pin the island there. */
+  id: string;
+  primary: boolean;
+  x: number;
+  y: number;
+  /** Physical pixels. */
+  width: number;
+  height: number;
+  scale: number;
+}
+
 export interface DroppedFile {
   name: string;
   path: string;
@@ -120,6 +142,8 @@ export interface DroppedFile {
 
 export interface HookStatus {
   installed: boolean;
+  /** Installed by an older version (e.g. the 120 s permission timeout). */
+  outdated: boolean;
   settingsPath: string;
   hookPath: string;
   hookReady: boolean;
@@ -143,19 +167,74 @@ export type BridgeEvent =
   | { name: "cursor"; payload: { x: number; y: number } }
   | { name: "tray"; payload: string }
   | { name: "hook"; payload: Record<string, unknown> }
-  | { name: "screen-changed"; payload: null };
+  | { name: "screen-changed"; payload: null }
+  | { name: "monitors-changed"; payload: null }
+  /** The cursor touched a wake strip on another display. */
+  | { name: "wake"; payload: null };
 
 export interface DragDropPayload {
   type: "enter" | "over" | "drop" | "leave";
   paths?: string[];
 }
 
-/** Files dragged onto the island. Only reaches us when the window takes the mouse. */
+interface WebView2Bridge {
+  postMessageWithAdditionalObjects(message: unknown, objects: ArrayLike<unknown>): void;
+}
+
+/**
+ * Files dragged onto the island. Only reaches us when the window takes the mouse.
+ *
+ * WebView2 takes the drop itself, as in Edge — Tauri's drop handling never sees
+ * drags from the classic Explorer folder view (see src-tauri/src/webview_drop.rs).
+ * Enter/over/leave come straight from the page; the drop hands the File objects
+ * to Rust, which answers with their real paths as a `file-drag` event.
+ */
 export async function onDragDrop(handler: (e: DragDropPayload) => void) {
   if (!IS_TAURI) return () => {};
-  return getCurrentWebview().onDragDropEvent((event) => {
-    handler(event.payload as DragDropPayload);
-  });
+  const hasFiles = (e: DragEvent) => e.dataTransfer?.types.includes("Files") ?? false;
+  // dragenter/dragleave fire for every element crossed; only the outermost pair counts.
+  let depth = 0;
+
+  const onEnter = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    if (depth++ === 0) handler({ type: "enter" });
+  };
+  const onOver = (e: DragEvent) => {
+    if (!hasFiles(e)) return;
+    // Without this WebView2 refuses the drop — or navigates to the file.
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    handler({ type: "over" });
+  };
+  const onLeave = (e: DragEvent) => {
+    if (!hasFiles(e) || depth === 0) return;
+    if (--depth === 0) handler({ type: "leave" });
+  };
+  const onDrop = (e: DragEvent) => {
+    e.preventDefault();
+    depth = 0;
+    const files = e.dataTransfer?.files;
+    const webview = (window as unknown as { chrome?: { webview?: WebView2Bridge } }).chrome?.webview;
+    if (!files || files.length === 0 || !webview) {
+      handler({ type: "drop", paths: [] });
+      return;
+    }
+    webview.postMessageWithAdditionalObjects("coucou-file-drop", files);
+  };
+
+  window.addEventListener("dragenter", onEnter);
+  window.addEventListener("dragover", onOver);
+  window.addEventListener("dragleave", onLeave);
+  window.addEventListener("drop", onDrop);
+  const unlisten = await listen<DragDropPayload>("file-drag", (e) => handler(e.payload));
+  return () => {
+    window.removeEventListener("dragenter", onEnter);
+    window.removeEventListener("dragover", onOver);
+    window.removeEventListener("dragleave", onLeave);
+    window.removeEventListener("drop", onDrop);
+    unlisten();
+  };
 }
 
 export async function onEvent<T>(name: string, handler: (payload: T) => void) {

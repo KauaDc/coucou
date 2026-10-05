@@ -4,8 +4,9 @@
 
 import "./settings.css";
 import { Bridge, onEvent, type HookStatus } from "../core/bridge";
-import { DEFAULT_SETTINGS, type Settings } from "../core/state";
+import { DEFAULT_SETTINGS, type ChatProvider, type Settings } from "../core/state";
 import { h, clear } from "../views/dom";
+import { t, applyDocumentLang } from "../i18n";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
 let version = "";
@@ -67,15 +68,15 @@ function claudeSection(status: HookStatus): HTMLElement {
       h("div", {
         class: "hint",
         text: status.installed
-          ? "Coucou is hooked into your Claude Code sessions. Tool calls, questions and permission requests show up in the island, and you can answer them there."
-          : "Install the hooks to see your Claude Code sessions in the island and approve permissions without leaving what you are doing.",
+          ? t("settings.hooks.installed")
+          : t("settings.hooks.notInstalled"),
       }),
       h("div", { class: "row" },
         h("label", { text: "settings.json" }),
         h("span", { class: "path", text: status.settingsPath }),
       ),
       h("div", { class: "row" },
-        h("label", { text: "Relay" }),
+        h("label", { text: t("settings.hooks.relay") }),
         h("span", { class: "path", text: status.hookPath }),
         statusDot(status.hookReady),
       ),
@@ -84,27 +85,33 @@ function claudeSection(status: HookStatus): HTMLElement {
     if (!status.hookReady) {
       body.append(h("div", {
         class: "notice warn",
-        text: "coucou-hook.exe is not in place yet. Restart Coucou; if it still fails, build it with `cargo build -p coucou-hook`.",
+        text: t("settings.hooks.relayMissing"),
+      }));
+    }
+    if (status.installed && status.outdated) {
+      body.append(h("div", {
+        class: "notice warn",
+        text: t("settings.hooks.outdated"),
       }));
     }
 
     const actions = h("div", { class: "row" });
     const install = h("button", {
       class: "primary",
-      text: status.installed ? "Reinstall hooks…" : "Install hooks…",
+      text: status.installed ? t("settings.hooks.reinstall") : t("settings.hooks.install"),
       onclick: () => showPreview(true),
     });
     // Writing hook commands that point at a relay which isn't there would give
     // every Claude Code session a broken hook and nothing to show for it.
     if (!status.hookReady) {
       install.disabled = true;
-      install.title = "The relay isn't installed yet.";
+      install.title = t("settings.hooks.relayNotInstalled");
     }
     actions.append(install);
     if (status.installed) {
       actions.append(h("button", {
         class: "danger",
-        text: "Uninstall hooks…",
+        text: t("settings.hooks.uninstall"),
         onclick: () => showPreview(false),
       }));
     }
@@ -122,7 +129,7 @@ function claudeSection(status: HookStatus): HTMLElement {
       body.append(
         h("div", { class: "notice err", text: String(err).replace(/^Error:\s*/, "") }),
         h("div", { class: "row" }, h("button", {
-          text: "Back",
+          text: t("settings.back"),
           onclick: () => { clear(body); draw(); },
         })),
       );
@@ -134,17 +141,17 @@ function claudeSection(status: HookStatus): HTMLElement {
       h("div", {
         class: "hint",
         text: install
-          ? "This is exactly what will change in your settings.json. Your own hooks are left untouched."
-          : "This removes Coucou's entries only. Your own hooks are left untouched.",
+          ? t("settings.hooks.previewInstall")
+          : t("settings.hooks.previewRemove"),
       }),
       renderDiff(preview.diff),
       h("div", { class: "row" },
-        h("span", { class: "path", text: `Backup → ${preview.backup}` }),
+        h("span", { class: "path", text: t("settings.hooks.backup", { path: preview.backup }) }),
       ),
     );
     const confirm = h("button", {
       class: install ? "primary" : "danger",
-      text: install ? "Back up and write" : "Back up and remove",
+      text: install ? t("settings.hooks.write") : t("settings.hooks.remove"),
     });
     confirm.addEventListener("click", async () => {
       confirm.disabled = true;
@@ -153,16 +160,16 @@ function claudeSection(status: HookStatus): HTMLElement {
         clear(body);
         body.append(h("div", {
           class: "notice ok",
-          text: `Done. Previous settings saved as ${backup}. Open a new Claude Code session to pick the hooks up.`,
+          text: t("settings.hooks.done", { backup }),
         }));
         window.setTimeout(() => void rebuild(), 2600);
       } catch (err) {
         confirm.disabled = false;
-        body.append(h("div", { class: "notice err", text: `Could not write: ${String(err)}` }));
+        body.append(h("div", { class: "notice err", text: t("settings.couldNotWrite", { err: String(err) }) }));
       }
     });
     body.append(h("div", { class: "row" }, confirm, h("button", {
-      text: "Cancel",
+      text: t("settings.cancel"),
       onclick: () => { clear(body); draw(); },
     })));
   }
@@ -171,85 +178,138 @@ function claudeSection(status: HookStatus): HTMLElement {
   return section;
 }
 
-// ── Claude API section ────────────────────────────────────────────────────────
+// ── Chat section ──────────────────────────────────────────────────────────────
 
-const MODELS: [string, string][] = [
-  ["claude-opus-5", "Claude Opus 5"],
-  ["claude-sonnet-5", "Claude Sonnet 5"],
-  ["claude-haiku-4-5", "Claude Haiku 4.5"],
-];
+interface ProviderDef {
+  label: string;
+  key: string;
+  placeholder: string;
+  /** Settings field holding this provider's model. */
+  modelField: "model" | "geminiModel";
+  models: [string, string][];
+}
 
-function apiSection(hasKey: boolean): HTMLElement {
-  const dot = statusDot(hasKey);
-  const state = h("span", { class: "hint", text: hasKey ? "Key saved in the Windows Credential Manager." : "No key yet — the chat needs one." });
+const PROVIDERS: Record<ChatProvider, ProviderDef> = {
+  anthropic: {
+    label: "Claude (Anthropic)",
+    key: "anthropic-api-key",
+    placeholder: "sk-ant-...",
+    modelField: "model",
+    models: [
+      ["claude-opus-5", "Claude Opus 5"],
+      ["claude-sonnet-5", "Claude Sonnet 5"],
+      ["claude-haiku-4-5", "Claude Haiku 4.5"],
+    ],
+  },
+  gemini: {
+    label: "Gemini (Google)",
+    key: "gemini-api-key",
+    placeholder: "AIza...",
+    modelField: "geminiModel",
+    // From ai.google.dev/gemini-api/docs/models (2026-10-02). The 2.5 series is
+    // closed to new users, so it is left out.
+    models: [
+      ["gemini-3.8-flash", "Gemini 3.8 Flash"],
+      ["gemini-3.7-flash", "Gemini 3.7 Flash"],
+      ["gemini-3.5-flash-lite", "Gemini 3.5 Flash-Lite"],
+      ["gemini-3.1-pro-preview", "Gemini 3.1 Pro (preview)"],
+    ],
+  },
+};
+
+function chatSection(): HTMLElement {
+  const dot = statusDot(false);
+  const state = h("span", { class: "hint" });
+
+  const provider = h("select", {}) as HTMLSelectElement;
+  for (const [id, def] of Object.entries(PROVIDERS)) provider.append(h("option", { value: id, text: def.label }));
+  provider.value = settings.chatProvider;
 
   const field = h("input", {
     type: "password",
-    placeholder: hasKey ? "••••••••••••  (stored)" : "sk-ant-...",
     style: "flex:1 1 auto;min-width:0",
     autocomplete: "off",
     spellcheck: "false",
   }) as HTMLInputElement;
 
-  const saveBtn = h("button", { class: "primary", text: "Save key" });
-  const clearBtn = h("button", { class: "danger", text: "Remove" });
+  const saveBtn = h("button", { class: "primary", text: t("settings.api.save") });
+  const clearBtn = h("button", { class: "danger", text: t("settings.api.remove") });
   const feedback = h("div", {});
+  const model = h("select", {}) as HTMLSelectElement;
+
+  const current = () => PROVIDERS[settings.chatProvider] ?? PROVIDERS.anthropic;
 
   async function refresh() {
-    const present = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
+    const def = current();
+    const present = (await Bridge.secretPresent(def.key)) ?? false;
+    if (def !== current()) return; // the provider changed while we were asking
     dot.style.background = present ? "#22c55e" : "#f4505e";
-    state.textContent = present
-      ? "Key saved in the Windows Credential Manager."
-      : "No key yet — the chat needs one.";
-    field.placeholder = present ? "••••••••••••  (stored)" : "sk-ant-...";
+    state.textContent = present ? t("settings.api.saved") : t("settings.api.none");
+    field.placeholder = present ? `••••••••••••  ${t("settings.api.stored")}` : def.placeholder;
     clearBtn.style.display = present ? "" : "none";
   }
+
+  function fillModels() {
+    const def = current();
+    const chosen = settings[def.modelField];
+    clear(model);
+    for (const [id, label] of def.models) model.append(h("option", { value: id, text: label }));
+    // A model saved by hand or by an older build stays selectable.
+    if (!def.models.some(([id]) => id === chosen)) model.append(h("option", { value: chosen, text: chosen }));
+    model.value = chosen;
+  }
+
+  provider.addEventListener("change", () => {
+    settings.chatProvider = provider.value as ChatProvider;
+    field.value = "";
+    clear(feedback);
+    fillModels();
+    void refresh();
+    void save();
+  });
+
+  model.addEventListener("change", () => {
+    settings[current().modelField] = model.value;
+    void save();
+  });
 
   saveBtn.addEventListener("click", async () => {
     const value = field.value.trim();
     if (!value) return;
     clear(feedback);
     try {
-      await Bridge.secretSet("anthropic-api-key", value);
+      await Bridge.secretSet(current().key, value);
       field.value = "";
-      feedback.append(h("div", { class: "notice ok", text: "Saved. It never touches disk." }));
+      feedback.append(h("div", { class: "notice ok", text: t("settings.api.savedOk") }));
       await refresh();
     } catch (err) {
-      feedback.append(h("div", { class: "notice err", text: `Could not save: ${String(err)}` }));
+      feedback.append(h("div", { class: "notice err", text: t("settings.couldNotSave", { err: String(err) }) }));
     }
   });
 
   clearBtn.addEventListener("click", async () => {
     clear(feedback);
     try {
-      await Bridge.secretClear("anthropic-api-key");
-      feedback.append(h("div", { class: "notice ok", text: "Key removed." }));
+      await Bridge.secretClear(current().key);
+      feedback.append(h("div", { class: "notice ok", text: t("settings.api.removed") }));
       await refresh();
     } catch (err) {
-      feedback.append(h("div", { class: "notice err", text: `Could not remove: ${String(err)}` }));
+      feedback.append(h("div", { class: "notice err", text: t("settings.couldNotRemove", { err: String(err) }) }));
     }
   });
 
-  const model = h("select", {}) as HTMLSelectElement;
-  for (const [id, label] of MODELS) model.append(h("option", { value: id, text: label }));
-  if (!MODELS.some(([id]) => id === settings.model)) {
-    model.append(h("option", { value: settings.model, text: settings.model }));
-  }
-  model.value = settings.model;
-  model.addEventListener("change", () => {
-    settings.model = model.value;
-    void save();
-  });
-
-  clearBtn.style.display = hasKey ? "" : "none";
+  clearBtn.style.display = "none";
+  fillModels();
+  void refresh();
 
   return h(
     "section",
     {},
-    h("h2", {}, dot, h("span", { text: "Claude" })),
+    h("h2", {}, dot, h("span", { text: t("settings.chat.title") })),
     state,
-    h("div", { class: "row" }, h("label", { text: "API key" }), field, saveBtn, clearBtn),
-    h("div", { class: "row" }, h("label", { text: "Model" }), model),
+    h("div", { class: "row" }, h("label", { text: t("settings.chat.provider") }), provider),
+    h("div", { class: "row" }, h("label", { text: t("settings.api.key") }), field, saveBtn, clearBtn),
+    h("div", { class: "row" }, h("label", { text: t("settings.api.model") }), model),
     feedback,
   );
 }
@@ -266,22 +326,24 @@ interface IntegrationDef {
 
 const INTEGRATIONS: IntegrationDef[] = [
   { id: "integration_stripe", name: "Stripe", color: "#0570DE",
-    fields: [{ key: "stripe-api-key", label: "Secret key", placeholder: "sk_live_…", secret: true }] },
+    fields: [{ key: "stripe-api-key", label: t("settings.int.secretKey"), placeholder: "sk_live_…", secret: true }] },
   { id: "integration_github", name: "GitHub", color: "#F4505E",
-    fields: [{ key: "github-token", label: "Token", placeholder: "ghp_…", secret: true }] },
+    fields: [{ key: "github-token", label: t("settings.int.token"), placeholder: "ghp_…", secret: true }] },
   { id: "integration_vercel", name: "Vercel", color: "#7C5CFF",
-    fields: [{ key: "vercel-token", label: "Token", placeholder: "…", secret: true }] },
+    fields: [{ key: "vercel-token", label: t("settings.int.token"), placeholder: "…", secret: true }] },
   { id: "integration_n8n", name: "n8n", color: "#F29B38",
     fields: [
-      { key: "n8n-url", label: "Instance URL", placeholder: "https://n8n.example.com", secret: false },
-      { key: "n8n-api-key", label: "API key", placeholder: "…", secret: true },
+      { key: "n8n-url", label: t("settings.int.instanceUrl"), placeholder: "https://n8n.example.com", secret: false },
+      { key: "n8n-api-key", label: t("settings.api.key"), placeholder: "…", secret: true },
     ] },
   { id: "integration_resend", name: "Resend", color: "#22C55E",
-    fields: [{ key: "resend-api-key", label: "API key", placeholder: "re_…", secret: true }] },
+    fields: [{ key: "resend-api-key", label: t("settings.api.key"), placeholder: "re_…", secret: true }] },
   { id: "integration_notion", name: "Notion", color: "#8C8C8C",
-    fields: [{ key: "notion-api-key", label: "Integration token", placeholder: "ntn_…", secret: true }] },
+    fields: [{ key: "notion-api-key", label: t("settings.int.integrationToken"), placeholder: "ntn_…", secret: true }] },
   { id: "integration_calcom", name: "Cal.com", color: "#C9956A",
-    fields: [{ key: "calcom-api-key", label: "API key", placeholder: "cal_…", secret: true }] },
+    fields: [{ key: "calcom-api-key", label: t("settings.api.key"), placeholder: "cal_…", secret: true }] },
+  { id: "integration_discloud", name: "Discloud", color: "#14B8A6",
+    fields: [{ key: "discloud-token", label: t("settings.int.token"), placeholder: "…", secret: true }] },
 ];
 
 const MAX_ACTIVE = 4;
@@ -292,7 +354,7 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
 
   function updateNote() {
     const used = settings.activeIntegrations.length;
-    note.textContent = `Pick up to ${MAX_ACTIVE} pills to show next to Mochi — ${used}/${MAX_ACTIVE} in use. Keys are stored in the Windows Credential Manager, never on disk.`;
+    note.textContent = t("settings.int.note", { max: MAX_ACTIVE, used });
   }
 
   for (const def of INTEGRATIONS) {
@@ -315,12 +377,12 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
     for (const field of def.fields) {
       const input = h("input", {
         type: field.secret ? "password" : "text",
-        placeholder: present[field.key] ? "••••••••  (stored)" : field.placeholder,
+        placeholder: present[field.key] ? `••••••••  ${t("settings.api.stored")}` : field.placeholder,
         autocomplete: "off",
         spellcheck: "false",
         style: "flex:1 1 auto;min-width:0",
       }) as HTMLInputElement;
-      const saveBtn = h("button", { text: "Save" });
+      const saveBtn = h("button", { text: t("settings.save") });
       const dotEl = statusDot(present[field.key] ?? false);
       saveBtn.addEventListener("click", async () => {
         const value = input.value.trim();
@@ -328,7 +390,7 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
           await Bridge.secretSet(field.key, value);
           present[field.key] = value.length > 0;
           input.value = "";
-          input.placeholder = value ? "••••••••  (stored)" : field.placeholder;
+          input.placeholder = value ? `••••••••  ${t("settings.api.stored")}` : field.placeholder;
           dotEl.style.background = value ? "#22c55e" : "#f4505e";
         } catch {
           dotEl.style.background = "#f5a524";
@@ -355,7 +417,7 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
   }
 
   updateNote();
-  return h("section", {}, h("h2", {}, h("span", { text: "Integrations" })), note, list);
+  return h("section", {}, h("h2", {}, h("span", { text: t("settings.int.title") })), note, list);
 }
 
 // ── General section ───────────────────────────────────────────────────────────
@@ -382,11 +444,10 @@ function generalSection(): HTMLElement {
   });
 
   const screen = h("select", {}) as HTMLSelectElement;
-  screen.append(
-    h("option", { value: "primary", text: "Main display" }),
-    h("option", { value: "cursor", text: "Display under the cursor" }),
-  );
-  screen.value = settings.screen;
+  void fillScreenSelect(screen);
+  // Displays come and go: refresh when told, and whenever the picker is opened.
+  void onEvent<null>("monitors-changed", () => void fillScreenSelect(screen));
+  screen.addEventListener("focus", () => void fillScreenSelect(screen));
   screen.addEventListener("change", () => {
     settings.screen = screen.value as Settings["screen"];
     void save();
@@ -395,45 +456,90 @@ function generalSection(): HTMLElement {
   return h(
     "section",
     {},
-    h("h2", {}, h("span", { text: "General" })),
+    h("h2", {}, h("span", { text: t("settings.general.title") })),
     h("div", { class: "row" },
-      h("label", { text: "Sound" }),
+      h("label", { text: t("settings.general.sound") }),
       toggle(settings.soundEnabled, (v) => { settings.soundEnabled = v; void save(); }),
       volume,
     ),
     h("div", { class: "row" },
-      h("label", { text: "Auto-close" }),
+      h("label", { text: t("settings.general.autoClose") }),
       autoClose,
-      h("span", { class: "hint", text: "seconds after you leave the island" }),
+      h("span", { class: "hint", text: t("settings.general.autoCloseHint") }),
     ),
     h("div", { class: "row" },
-      h("label", { text: "Island lives on" }),
+      h("label", { text: t("settings.general.screen") }),
       screen,
     ),
     h("div", { class: "row" },
-      h("label", { text: "Launch at startup" }),
+      h("label", { text: t("settings.general.autostart") }),
       toggle(settings.autostart, (v) => { settings.autostart = v; void save(); }),
     ),
   );
 }
 
+/**
+ * "Main display", "Display under the cursor", then one entry per connected
+ * display. A pinned display that is unplugged stays listed (and selected) so the
+ * preference is visibly kept while the island falls back to the main display.
+ */
+async function fillScreenSelect(select: HTMLSelectElement) {
+  const monitors = (await Bridge.listMonitors()) ?? [];
+  const options = [
+    h("option", { value: "primary", text: t("settings.general.screenMain") }),
+    h("option", { value: "cursor", text: t("settings.general.screenCursor") }),
+    ...monitors.map((m, i) =>
+      h("option", {
+        value: m.id,
+        text:
+          t("settings.general.screenMonitor", { n: i + 1, w: m.width, h: m.height }) +
+          (m.primary ? t("settings.general.screenPrimarySuffix") : ""),
+      }),
+    ),
+  ];
+  const current = settings.screen;
+  let selected: string = current;
+  if (current.startsWith("monitor:")) {
+    // Same lookup as island::find_pinned: exact, then by name, then by geometry.
+    const [name, geo] = splitMonitorId(current);
+    const match =
+      monitors.find((m) => m.id === current) ??
+      (name ? monitors.find((m) => splitMonitorId(m.id)[0] === name) : undefined) ??
+      monitors.find((m) => splitMonitorId(m.id)[1] === geo);
+    if (match) {
+      selected = match.id;
+    } else {
+      options.push(h("option", { value: current, text: t("settings.general.screenMissing") }));
+    }
+  }
+  select.replaceChildren(...options);
+  select.value = selected;
+}
+
+/** `monitor:<name>@<geometry>` → [name, geometry]. */
+function splitMonitorId(id: string): [string, string] {
+  const body = id.slice("monitor:".length);
+  const at = body.lastIndexOf("@");
+  return at < 0 ? [body, ""] : [body.slice(0, at), body.slice(at + 1)];
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 async function main() {
+  applyDocumentLang("settings.windowTitle");
   const boot = await Bridge.boot();
   if (boot) {
     settings = { ...settings, ...boot.settings };
     version = boot.version;
   }
   const status = (await Bridge.hooksStatus()) ?? {
-    installed: false, settingsPath: "", hookPath: "", hookReady: false,
+    installed: false, outdated: false, settingsPath: "", hookPath: "", hookReady: false,
   };
-
-  const hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
 
   const keys = [
     "stripe-api-key", "github-token", "vercel-token",
     "n8n-url", "n8n-api-key", "resend-api-key", "notion-api-key", "calcom-api-key",
+    "discloud-token",
   ];
   const present: Record<string, boolean> = {};
   for (const k of keys) present[k] = (await Bridge.secretPresent(k)) ?? false;
@@ -442,12 +548,12 @@ async function main() {
   root.append(
     h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
     claudeSection(status),
-    apiSection(hasKey),
+    chatSection(),
     integrationsSection(present),
     generalSection(),
     h("div", {
       class: "hint",
-      text: "No telemetry. Network requests only go to the services you configure yourself.",
+      text: t("settings.privacy"),
     }),
   );
 

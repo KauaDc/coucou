@@ -5,12 +5,16 @@
 // one emits an `integration` event; the island owns the badge, the sound and the
 // 60 s auto-clear, exactly as the Swift handlers do.
 //
+// Discloud is Windows-only and the one integration that writes: its start / stop
+// / restart commands run only from a click in the island.
+//
 // Nothing is polled until its key exists in the Credential Manager, and no
 // request goes anywhere the user has not configured.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -68,7 +72,9 @@ pub fn start(app: AppHandle) {
     spawn(app.clone(), "integration_resend", 6, 60, poll_resend);
     spawn(app.clone(), "integration_github", 7, 300, poll_github);
     spawn(app.clone(), "integration_calcom", 8, 300, poll_calcom);
-    spawn(app, "integration_notion", 9, 300, poll_notion);
+    spawn(app.clone(), "integration_notion", 9, 300, poll_notion);
+    // The Discloud rate limit is undocumented: two requests a minute stays well clear.
+    spawn(app, "integration_discloud", 10, 60, poll_discloud);
 }
 
 /// True when the user has this integration switched on in settings.
@@ -113,6 +119,7 @@ pub async fn poll_once(app: AppHandle, id: &str) {
         "integration_resend" => poll_resend(app).await,
         "integration_notion" => poll_notion(app).await,
         "integration_calcom" => poll_calcom(app).await,
+        "integration_discloud" => poll_discloud(app).await,
         _ => {}
     }
 }
@@ -135,9 +142,9 @@ fn is_new(key: &'static str, id: &str) -> bool {
 
 fn status_error(code: u16, unauthorised_hint: &str) -> String {
     match code {
-        401 => "Invalid API key (401)".into(),
+        401 => crate::i18n::t("Invalid API key (401)", "Chave de API inválida (401)").into(),
         403 => unauthorised_hint.into(),
-        _ => format!("API error {code}"),
+        _ => if crate::i18n::pt() { format!("Erro da API {code}") } else { format!("API error {code}") },
     }
 }
 
@@ -145,7 +152,7 @@ fn status_error(code: u16, unauthorised_hint: &str) -> String {
 
 async fn poll_stripe(app: AppHandle) {
     let Some(key) = secrets::get("stripe-api-key") else { return };
-    let auth = format!("Basic {}", crate::claude::base64_for(format!("{key}:").as_bytes()));
+    let auth = format!("Basic {}", crate::chat::base64_for(format!("{key}:").as_bytes()));
     let http = client();
 
     let balance = http
@@ -180,7 +187,7 @@ async fn poll_stripe(app: AppHandle) {
             emit(&app, IntegrationUpdate {
                 id: "integration_stripe",
                 data: json!({}),
-                error: Some(status_error(code, "Use a secret key (sk_live_… not pk_live_…)")),
+                error: Some(status_error(code, crate::i18n::t("Use a secret key (sk_live_… not pk_live_…)", "Use uma chave secreta (sk_live_…, não pk_live_…)"))),
                 event: None,
             });
             return;
@@ -189,7 +196,7 @@ async fn poll_stripe(app: AppHandle) {
             emit(&app, IntegrationUpdate {
                 id: "integration_stripe",
                 data: json!({}),
-                error: Some(format!("No connection: {e}")),
+                error: Some(if crate::i18n::pt() { format!("Sem conexão: {e}") } else { format!("No connection: {e}") }),
                 event: None,
             });
             return;
@@ -280,7 +287,7 @@ async fn poll_github(app: AppHandle) {
         emit(&app, IntegrationUpdate {
             id: "integration_github",
             data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Token lacks the needed scope")),
+            error: Some(status_error(response.status().as_u16(), crate::i18n::t("Token lacks the needed scope", "O token não tem o escopo necessário"))),
             event: None,
         });
         return;
@@ -338,7 +345,7 @@ async fn poll_vercel(app: AppHandle) {
         emit(&app, IntegrationUpdate {
             id: "integration_vercel",
             data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Token lacks access")),
+            error: Some(status_error(response.status().as_u16(), crate::i18n::t("Token lacks access", "O token não tem acesso"))),
             event: None,
         });
         return;
@@ -395,6 +402,323 @@ async fn poll_vercel(app: AppHandle) {
     });
 }
 
+// ── Discloud ──────────────────────────────────────────────────────────────────
+
+const DISCLOUD_API: &str = "https://api.discloud.app/v2";
+const DISCLOUD_ID: &str = "integration_discloud";
+/// A stop or restart the user clicked makes the app drop: that drop is expected
+/// and must not sound like an outage.
+const DISCLOUD_QUIET: Duration = Duration::from_secs(180);
+const DISCLOUD_LOG_LINES: usize = 200;
+const DISCLOUD_LOG_BYTES: usize = 32 * 1024;
+
+/// Last known state per app, so an event fires when an app changes, not on every poll.
+#[derive(Default)]
+struct DiscloudMemory {
+    online: HashMap<String, bool>,
+    quiet_until: HashMap<String, Instant>,
+    primed: bool,
+    skip_next: bool,
+}
+
+static DISCLOUD: LazyLock<Mutex<DiscloudMemory>> = LazyLock::new(Default::default);
+
+struct DiscloudFailure {
+    code: Option<u16>,
+    message: String,
+}
+
+fn no_connection(e: impl std::fmt::Display) -> String {
+    if crate::i18n::pt() { format!("Sem conexão: {e}") } else { format!("No connection: {e}") }
+}
+
+async fn discloud_send(method: reqwest::Method, path: &str) -> Result<Value, DiscloudFailure> {
+    let Some(token) = secrets::get("discloud-token") else {
+        return Err(DiscloudFailure {
+            code: None,
+            message: crate::i18n::t("Token not configured", "Token não configurado").into(),
+        });
+    };
+    let response = client()
+        .request(method, format!("{DISCLOUD_API}{path}"))
+        .header("api-token", token)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| DiscloudFailure { code: None, message: no_connection(e) })?;
+    let code = response.status().as_u16();
+    let json: Value = response.json().await.unwrap_or(json!({}));
+    let api_message = json.get("message").and_then(Value::as_str).map(str::to_string);
+    let failed_in_body = json.get("status").and_then(Value::as_str) == Some("error");
+    if (200..300).contains(&code) && !failed_in_body {
+        return Ok(json);
+    }
+    let message = match code {
+        401 => status_error(401, ""),
+        429 => crate::i18n::t("API rate limit, trying again shortly", "Limite da API, tentando de novo em breve").into(),
+        _ => api_message.unwrap_or_else(|| {
+            status_error(code, crate::i18n::t("Token lacks access", "O token não tem acesso"))
+        }),
+    };
+    Err(DiscloudFailure { code: Some(code), message })
+}
+
+/// `apps` is a list for `/app/all` and a single object for `/app/{id}`.
+fn as_list(v: Option<&Value>) -> Vec<&Value> {
+    match v {
+        Some(Value::Array(list)) => list.iter().collect(),
+        Some(obj @ Value::Object(_)) => vec![obj],
+        _ => Vec::new(),
+    }
+}
+
+/// Joins `/app/all` (names, online) with `/app/all/status` (CPU, RAM), offline first.
+fn discloud_apps(info: &Value, status: Option<&Value>) -> Vec<Value> {
+    let metrics: HashMap<&str, &Value> = as_list(status.and_then(|s| s.get("apps")))
+        .into_iter()
+        .filter_map(|m| Some((m.get("id")?.as_str()?, m)))
+        .collect();
+    let mut apps: Vec<Value> = as_list(info.get("apps"))
+        .into_iter()
+        .filter_map(|a| {
+            let id = a.get("id")?.as_str()?;
+            let m = metrics.get(id);
+            let field = |k: &str| m.and_then(|m| m.get(k)).and_then(Value::as_str).map(str::to_string);
+            let online = a
+                .get("online")
+                .and_then(Value::as_bool)
+                .unwrap_or_else(|| field("container").as_deref() == Some("Online"));
+            Some(json!({
+                "id": id,
+                "name": a.get("name").and_then(Value::as_str).unwrap_or(id),
+                "online": online,
+                "ramKilled": a.get("ramKilled").and_then(Value::as_bool).unwrap_or(false),
+                "exitCode": a.get("exitCode").and_then(Value::as_i64),
+                "ramLimit": a.get("ram").and_then(Value::as_i64),
+                "cpu": field("cpu"),
+                "memory": field("memory"),
+                "startedAt": field("startedAt"),
+            }))
+        })
+        .collect();
+    let key = |a: &Value| {
+        let online = a.get("online").and_then(Value::as_bool).unwrap_or(false);
+        let name = a.get("name").and_then(Value::as_str).unwrap_or("").to_lowercase();
+        (online, name)
+    };
+    apps.sort_by_key(key);
+    apps
+}
+
+fn discloud_down_detail(app: &Value) -> String {
+    if app.get("ramKilled").and_then(Value::as_bool).unwrap_or(false) {
+        return crate::i18n::t("Out of memory", "Sem memória").into();
+    }
+    match app.get("exitCode").and_then(Value::as_i64) {
+        Some(code) if code != 0 => {
+            if crate::i18n::pt() { format!("Saiu com código {code}") } else { format!("Exited with code {code}") }
+        }
+        _ => crate::i18n::t("Went offline", "Ficou offline").into(),
+    }
+}
+
+/// Compares this poll with the last one. The first poll only fills the card; apps
+/// the user just stopped or restarted stay quiet. Several changes in one poll
+/// become one event, an outage winning over a recovery.
+fn discloud_event(mem: &mut DiscloudMemory, apps: &[Value], now: Instant) -> Option<IntegrationEvent> {
+    let mut downs: Vec<(String, String)> = Vec::new();
+    let mut ups: Vec<String> = Vec::new();
+    let mut seen = HashMap::new();
+    for app in apps {
+        let Some(id) = app.get("id").and_then(Value::as_str) else { continue };
+        let name = app.get("name").and_then(Value::as_str).unwrap_or(id).to_string();
+        let online = app.get("online").and_then(Value::as_bool).unwrap_or(false);
+        seen.insert(id.to_string(), online);
+        let quiet = mem.quiet_until.get(id).is_some_and(|until| *until > now);
+        if !mem.primed || quiet {
+            continue;
+        }
+        match mem.online.get(id) {
+            Some(true) if !online => downs.push((name, discloud_down_detail(app))),
+            Some(false) if online => ups.push(name),
+            _ => {}
+        }
+    }
+    // Apps deleted in the dashboard simply disappear.
+    mem.online = seen;
+    mem.quiet_until.retain(|_, until| *until > now);
+    if !mem.primed {
+        mem.primed = true;
+        return None;
+    }
+
+    let (success, label, detail, count) = if let Some((name, detail)) = downs.first() {
+        (false, name.clone(), detail.clone(), downs.len())
+    } else {
+        let name = ups.first()?;
+        (true, name.clone(), crate::i18n::t("Back online", "De volta ao ar").to_string(), ups.len())
+    };
+    let detail = if count > 1 {
+        let others = count - 1;
+        if crate::i18n::pt() { format!("{detail} · +{others} outros") } else { format!("{detail} · +{others} more") }
+    } else {
+        detail
+    };
+    Some(IntegrationEvent { success, label, detail: Some(detail) })
+}
+
+async fn poll_discloud(app: AppHandle) {
+    if secrets::get("discloud-token").is_none() {
+        return;
+    }
+    {
+        let mut mem = DISCLOUD.lock().unwrap();
+        if mem.skip_next {
+            mem.skip_next = false;
+            return;
+        }
+    }
+    let info = match discloud_send(reqwest::Method::GET, "/app/all").await {
+        Ok(json) => json,
+        Err(failure) => {
+            if failure.code == Some(429) {
+                DISCLOUD.lock().unwrap().skip_next = true;
+            }
+            emit(&app, IntegrationUpdate {
+                id: DISCLOUD_ID,
+                data: json!({}),
+                error: Some(failure.message),
+                event: None,
+            });
+            return;
+        }
+    };
+    // Metrics are a bonus: without them the card still shows which apps are up.
+    let status = discloud_send(reqwest::Method::GET, "/app/all/status").await.ok();
+    let apps = discloud_apps(&info, status.as_ref());
+    let event = discloud_event(&mut DISCLOUD.lock().unwrap(), &apps, Instant::now());
+    emit(&app, IntegrationUpdate {
+        id: DISCLOUD_ID,
+        data: json!({ "apps": apps }),
+        error: None,
+        event,
+    });
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscloudActionResult {
+    pub ok: bool,
+    pub message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscloudLogs {
+    pub text: String,
+    pub url: Option<String>,
+}
+
+/// Discloud app ids are short alphanumeric strings. Anything else — and `all`,
+/// which would hit every app at once — is refused before it reaches a URL.
+fn valid_app_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id != "all"
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn discloud_allowed(app: &AppHandle) -> Result<(), String> {
+    if PAUSED.load(Ordering::Relaxed) {
+        return Err(crate::i18n::t("Coucou is paused", "O Coucou está pausado").into());
+    }
+    if !enabled(app, DISCLOUD_ID) {
+        return Err(crate::i18n::t("Discloud is off in Settings", "A Discloud está desligada nos Ajustes").into());
+    }
+    Ok(())
+}
+
+/// Start / stop / restart from the island's buttons — never called on its own.
+pub async fn discloud_action(app: AppHandle, app_id: String, action: String) -> DiscloudActionResult {
+    let refuse = |message: String| DiscloudActionResult { ok: false, message };
+    let action: &'static str = match action.as_str() {
+        "start" => "start",
+        "stop" => "stop",
+        "restart" => "restart",
+        _ => return refuse(crate::i18n::t("Unknown action", "Ação desconhecida").into()),
+    };
+    if !valid_app_id(&app_id) {
+        return refuse(crate::i18n::t("Invalid app", "App inválido").into());
+    }
+    if let Err(message) = discloud_allowed(&app) {
+        return refuse(message);
+    }
+
+    DISCLOUD
+        .lock()
+        .unwrap()
+        .quiet_until
+        .insert(app_id.clone(), Instant::now() + DISCLOUD_QUIET);
+    let result = match discloud_send(reqwest::Method::PUT, &format!("/app/{app_id}/{action}")).await {
+        Ok(json) => DiscloudActionResult {
+            ok: true,
+            message: json
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| crate::i18n::t("Done", "Feito").into()),
+        },
+        Err(failure) => {
+            // Nothing changed on the server, so a real outage must still be heard.
+            DISCLOUD.lock().unwrap().quiet_until.remove(&app_id);
+            refuse(failure.message)
+        }
+    };
+    log::line(format!("discloud {action} {app_id} → {}", if result.ok { "ok" } else { "failed" }));
+
+    // Once now, and again when the container has had time to move.
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        poll_discloud(handle.clone()).await;
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        poll_discloud(handle).await;
+    });
+    result
+}
+
+/// The last lines of an app's terminal. The text may hold the app's own secrets,
+/// so it goes to the island and nowhere else — never to the log.
+pub async fn discloud_logs(app: AppHandle, app_id: String) -> Result<DiscloudLogs, String> {
+    if !valid_app_id(&app_id) {
+        return Err(crate::i18n::t("Invalid app", "App inválido").into());
+    }
+    discloud_allowed(&app)?;
+    let json = discloud_send(reqwest::Method::GET, &format!("/app/{app_id}/logs"))
+        .await
+        .map_err(|failure| failure.message)?;
+    let terminal = as_list(json.get("apps")).into_iter().next().and_then(|a| a.get("terminal"));
+    let pick = |k: &str| terminal.and_then(|t| t.get(k)).and_then(Value::as_str).filter(|s| !s.is_empty());
+    let text = pick("small").or_else(|| pick("big")).unwrap_or("");
+    Ok(DiscloudLogs {
+        text: tail(text, DISCLOUD_LOG_LINES, DISCLOUD_LOG_BYTES),
+        url: pick("url").map(str::to_string),
+    })
+}
+
+/// The last `max_lines` lines, then the last `max_bytes` bytes on a char boundary.
+fn tail(text: &str, max_lines: usize, max_bytes: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let out = lines[lines.len().saturating_sub(max_lines)..].join("\n");
+    if out.len() <= max_bytes {
+        return out;
+    }
+    let mut cut = out.len() - max_bytes;
+    while !out.is_char_boundary(cut) {
+        cut += 1;
+    }
+    out[cut..].to_string()
+}
+
 // ── Resend ────────────────────────────────────────────────────────────────────
 
 async fn poll_resend(app: AppHandle) {
@@ -410,7 +734,7 @@ async fn poll_resend(app: AppHandle) {
         emit(&app, IntegrationUpdate {
             id: "integration_resend",
             data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Key lacks access")),
+            error: Some(status_error(response.status().as_u16(), crate::i18n::t("Key lacks access", "A chave não tem acesso"))),
             event: None,
         });
         return;
@@ -472,7 +796,7 @@ async fn poll_notion(app: AppHandle) {
         emit(&app, IntegrationUpdate {
             id: "integration_notion",
             data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Integration lacks access")),
+            error: Some(status_error(response.status().as_u16(), crate::i18n::t("Integration lacks access", "A integração não tem acesso"))),
             event: None,
         });
         return;
@@ -559,7 +883,7 @@ async fn poll_calcom(app: AppHandle) {
         emit(&app, IntegrationUpdate {
             id: "integration_calcom",
             data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Key lacks access")),
+            error: Some(status_error(response.status().as_u16(), crate::i18n::t("Key lacks access", "A chave não tem acesso"))),
             event: None,
         });
         return;
@@ -761,5 +1085,85 @@ fn fmt_value(v: &Value) -> String {
         Value::Array(a) => format!("[{}]", a.len()),
         Value::Object(_) => "{…}".into(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app(id: &str, online: bool) -> Value {
+        json!({ "id": id, "name": id, "online": online, "ramKilled": false, "exitCode": 0 })
+    }
+
+    #[test]
+    fn discloud_apps_accepts_list_and_object_and_sorts_offline_first() {
+        let info = json!({ "apps": [
+            { "id": "b", "name": "Beta", "online": true },
+            { "id": "a", "name": "alpha", "online": false },
+        ] });
+        let status = json!({ "apps": { "id": "b", "cpu": "12%", "memory": "180/512MB" } });
+        let apps = discloud_apps(&info, Some(&status));
+        assert_eq!(apps[0]["id"], "a");
+        assert_eq!(apps[1]["cpu"], "12%");
+        assert!(apps[0]["cpu"].is_null());
+    }
+
+    #[test]
+    fn discloud_online_falls_back_to_container() {
+        let info = json!({ "apps": [{ "id": "a" }] });
+        let status = json!({ "apps": [{ "id": "a", "container": "Online" }] });
+        assert_eq!(discloud_apps(&info, Some(&status))[0]["online"], true);
+    }
+
+    #[test]
+    fn first_poll_is_silent_then_changes_fire_once() {
+        let mut mem = DiscloudMemory::default();
+        let now = Instant::now();
+        assert!(discloud_event(&mut mem, &[app("a", true)], now).is_none());
+        let down = discloud_event(&mut mem, &[app("a", false)], now).unwrap();
+        assert!(!down.success);
+        assert_eq!(down.detail.as_deref(), Some("Went offline"));
+        assert!(discloud_event(&mut mem, &[app("a", false)], now).is_none());
+        assert!(discloud_event(&mut mem, &[app("a", true)], now).unwrap().success);
+    }
+
+    #[test]
+    fn outage_wins_and_counts_the_others() {
+        let mut mem = DiscloudMemory::default();
+        let now = Instant::now();
+        discloud_event(&mut mem, &[app("a", true), app("b", true), app("c", false)], now);
+        let e = discloud_event(&mut mem, &[app("a", false), app("b", false), app("c", true)], now).unwrap();
+        assert!(!e.success);
+        assert_eq!(e.detail.as_deref(), Some("Went offline · +1 more"));
+    }
+
+    #[test]
+    fn user_actions_stay_quiet() {
+        let mut mem = DiscloudMemory::default();
+        let now = Instant::now();
+        discloud_event(&mut mem, &[app("a", true)], now);
+        mem.quiet_until.insert("a".into(), now + DISCLOUD_QUIET);
+        assert!(discloud_event(&mut mem, &[app("a", false)], now).is_none());
+        // Still offline after the quiet window: no late alarm either.
+        assert!(discloud_event(&mut mem, &[app("a", false)], now + DISCLOUD_QUIET * 2).is_none());
+    }
+
+    #[test]
+    fn app_ids_are_checked() {
+        assert!(valid_app_id("1712345678901"));
+        assert!(valid_app_id("my-bot_2"));
+        assert!(!valid_app_id("all"));
+        assert!(!valid_app_id(""));
+        assert!(!valid_app_id("a/../../user"));
+        assert!(!valid_app_id("a?x=1"));
+    }
+
+    #[test]
+    fn tail_keeps_the_end() {
+        let text = (1..=300).map(|n| n.to_string()).collect::<Vec<_>>().join("\n");
+        let out = tail(&text, 200, 1 << 20);
+        assert!(out.starts_with("101\n") && out.ends_with("300"));
+        assert_eq!(tail("ééé", 10, 3), "é");
     }
 }

@@ -5,15 +5,18 @@
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
-import { State, type AgentTask } from "../core/state";
+import { State, providerLabel, type AgentTask } from "../core/state";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
-import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
+import { cardUiKey, renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
+import { t } from "../i18n";
 
 export interface ViewActions {
   setView(v: IslandViewName): void;
+  /** "Cancel" on a dropped file: forgets it and goes back home. */
+  cancelDrop(): void;
   collapse(): void;
   setFocus(id: string): void;
   openTerminal(): void;
@@ -21,6 +24,16 @@ export interface ViewActions {
   openTarget(): void;
   openUrl(url: string): void;
   decide(d: "allow" | "deny"): void;
+  /** Leave the approval or question card to Claude Code's terminal prompt. */
+  answerInTerminal(): void;
+  /** Option `i` of the question on screen: answers it, or toggles it (multi). */
+  questionPick(i: number): void;
+  questionNext(): void;
+  questionBack(): void;
+  /** Opens or closes the "Other…" field. */
+  questionOther(open: boolean): void;
+  /** The user's own words for the question on screen. */
+  questionCustom(text: string): void;
   toggleSound(): void;
   setVolume(v: number): void;
   setAutoClose(seconds: number): void;
@@ -78,12 +91,12 @@ function stack(padLeft: number, padRight: number, ...children: Node[]): HTMLElem
 // ── Header ────────────────────────────────────────────────────────────────────
 
 export function buildHeader(actions: ViewActions): ViewHost {
-  const tabHome = h("button", { class: "tab", title: "Overview", onclick: () => go("overview") }, svg(ICONS.house, 13));
-  const tabChat = h("button", { class: "tab", title: "Ask", onclick: () => go("prompt") }, svg(ICONS.bubble, 13));
-  const tabDrop = h("button", { class: "tab", title: "Drop", onclick: () => go("upload") }, svg(ICONS.plus, 13));
+  const tabHome = h("button", { class: "tab", title: t("tab.overview"), onclick: () => go("overview") }, svg(ICONS.house, 13));
+  const tabChat = h("button", { class: "tab", title: t("tab.ask"), onclick: () => go("prompt") }, svg(ICONS.bubble, 13));
+  const tabDrop = h("button", { class: "tab", title: t("tab.drop"), onclick: () => go("upload") }, svg(ICONS.plus, 13));
 
-  const gearBtn = h("button", { title: "Settings", onclick: () => go("settings") }, svg(ICONS.gear, 14));
-  const soundBtn = h("button", { title: "Mute", onclick: () => actions.toggleSound() }, svg(ICONS.speakerOn, 14));
+  const gearBtn = h("button", { title: t("tab.settings"), onclick: () => go("settings") }, svg(ICONS.gear, 14));
+  const soundBtn = h("button", { title: t("tab.mute"), onclick: () => actions.toggleSound() }, svg(ICONS.speakerOn, 14));
 
   function go(v: IslandViewName) {
     actions.blip();
@@ -123,7 +136,7 @@ function buildOverview(actions: ViewActions): ViewHost {
   const leftBody = h("div", { class: "left-body" });
   const jump = h(
     "button",
-    { class: "icon-btn jump", title: "Open", onclick: () => actions.openTarget() },
+    { class: "icon-btn jump", title: t("overview.open"), onclick: () => actions.openTarget() },
     svg(ICONS.arrowUpRight, 8),
   );
   const left = card(null, leftBody, jump);
@@ -202,7 +215,7 @@ function buildOverview(actions: ViewActions): ViewHost {
         const key = [
           task.id, detailOpen, task.state, task.steps.join("|"),
           info?.loaded, info?.error, info?.configured,
-          JSON.stringify(info?.data ?? {}),
+          JSON.stringify(info?.data ?? {}), cardUiKey(task.id),
         ].join("~");
         if (key !== cardKey) {
           cardKey = key;
@@ -271,19 +284,28 @@ function lighten(hex: string, amount: number): string {
 // ── Empty ─────────────────────────────────────────────────────────────────────
 
 function buildEmpty(actions: ViewActions): ViewHost {
+  const ask = btn("", "primary", () => actions.setView("prompt"));
+  const askLabel = ask.firstElementChild as HTMLElement;
   const body = h(
     "div",
     { class: "stack", style: "padding:0 18px 0 118px;flex-direction:row;align-items:center;gap:16px" },
     h(
       "div",
       { style: "display:flex;flex-direction:column;gap:5px" },
-      h("div", { class: "title", text: "Nothing running right now." }),
-      h("div", { class: "sub", text: "Drop a file or window, or ask me anything." }),
+      h("div", { class: "title", text: t("empty.title") }),
+      h("div", { class: "sub", text: t("empty.sub") }),
     ),
     h("div", { class: "grow" }),
-    btn("Ask Claude", "primary", () => actions.setView("prompt")),
+    ask,
   );
-  return { el: h("div", { class: "view" }, card(null, body)), sync() {} };
+  return {
+    el: h("div", { class: "view" }, card(null, body)),
+    sync() {
+      // The provider can change from the settings window while the island runs.
+      const label = t("empty.ask", { provider: providerLabel(State.settings.chatProvider) });
+      if (askLabel.textContent !== label) askLabel.textContent = label;
+    },
+  };
 }
 
 // ── Approval ──────────────────────────────────────────────────────────────────
@@ -298,20 +320,22 @@ function buildApproval(actions: ViewActions): ViewHost {
     el,
     sync() {
       clear(who);
-      who.append(agentWho(State.focusTask, "needs permission"));
+      who.append(agentWho(State.focusTask, t("approval.who")));
       // The whole point of approving here rather than in the terminal: this line
       // is the command, the file path or the URL being authorised, not just the
       // name of the tool asking.
       code.textContent = State.pendingApproval?.command || State.pendingApproval?.tool || "…";
-      // Two buttons, built once. Rebuilding them between a mouse-down and a
-      // mouse-up would swallow the click, and there is nothing left to vary:
-      // "Always" is gone until the remembered-rules list exists to back it.
+      // Built once. Rebuilding them between a mouse-down and a mouse-up would
+      // swallow the click, and there is nothing left to vary: "Always" is gone
+      // until the remembered-rules list exists to back it.
       if (rowKey === "built") return;
       rowKey = "built";
       clear(row);
       row.append(
-        btn("Deny", "secondary", () => actions.decide("deny"), "N"),
-        btn("Allow", "primary", () => actions.decide("allow"), "Y"),
+        btn(t("approval.deny"), "secondary", () => actions.decide("deny"), "N"),
+        btn(t("approval.allow"), "primary", () => actions.decide("allow"), "Y"),
+        h("div", { class: "spacer" }),
+        btn(t("approval.terminal"), "secondary", () => actions.answerInTerminal(), "Esc"),
       );
     },
   };
@@ -319,20 +343,117 @@ function buildApproval(actions: ViewActions): ViewHost {
 
 // ── Question ──────────────────────────────────────────────────────────────────
 
-function buildQuestion(): ViewHost {
+/**
+ * Two cards in one. With an `AskUserQuestion` pending it is answered right here:
+ * one question at a time, a click per choice (several for a multi-select), or
+ * the user's own words. Without one — a Notification ending in "?" — it only
+ * says that the terminal is waiting.
+ */
+function buildQuestion(actions: ViewActions): ViewHost {
   const who = h("div");
-  const title = h("div", { class: "title" });
+  const meta = h("div", { class: "q-meta" });
+  const title = h("div", { class: "title q-title" });
+  const grid = h("div", { class: "q-grid" });
+  const input = h("input", {
+    class: "q-input",
+    type: "text",
+    placeholder: t("question.otherPlaceholder"),
+  }) as HTMLInputElement;
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") actions.questionCustom(input.value);
+    if (e.key === "Escape") actions.questionOther(false);
+  });
+  const field = h("div", { class: "q-field" }, input);
   const row = h("div", { class: "actions" });
-  const el = h("div", { class: "view" }, card("cyan", stack(116, 16, who, title, row)));
+  const el = h(
+    "div",
+    { class: "view" },
+    card("cyan", stack(116, 16, who, meta, title, grid, field, row)),
+  );
+
+  // Buttons are rebuilt only when another question comes up, never on a plain
+  // sync: rebuilding between a mouse-down and a mouse-up would swallow the click.
+  let builtKey = "";
+  let options: HTMLElement[] = [];
+  let next: HTMLButtonElement | null = null;
+
+  function rebuild(key: string) {
+    builtKey = key;
+    clear(grid);
+    clear(row);
+    options = [];
+    next = null;
+    const q = State.pendingQuestion;
+    const current = q?.questions[q.index];
+    if (!q || !current) {
+      row.append(h("div", { class: "sub", text: t("question.sub") }));
+      return;
+    }
+    current.options.forEach((o, i) => {
+      const b = h(
+        "button",
+        { class: "q-opt", title: o.description || o.label, onclick: () => actions.questionPick(i) },
+        h("span", { class: "q-n", text: String(i + 1) }),
+        h("span", { class: "q-text" },
+          h("span", { class: "q-l", text: o.label }),
+          o.description ? h("span", { class: "q-d", text: o.description }) : null,
+        ),
+      );
+      options.push(b);
+      grid.append(b);
+    });
+    if (q.index > 0) row.append(btn(t("question.back"), "secondary", () => actions.questionBack()));
+    row.append(btn(t("question.other"), "secondary", () => actions.questionOther(true)));
+    row.append(h("div", { class: "spacer" }));
+    row.append(btn(t("question.terminal"), "secondary", () => actions.answerInTerminal(), "Esc"));
+    // A single choice is answered by its click; only a multi-select needs a
+    // button to say "that's all".
+    if (current.multiSelect) {
+      const last = q.index === q.questions.length - 1;
+      next = btn(last ? t("question.send") : t("question.next"), "primary", () => actions.questionNext(), "↵") as HTMLButtonElement;
+      row.append(next);
+    }
+  }
+
   return {
     el,
     sync() {
+      const q = State.pendingQuestion;
+      const current = q?.questions[q.index];
       clear(who);
-      who.append(agentWho(State.focusTask, "Claude Code is asking a question"));
-      const task = State.focusTask;
-      title.textContent = task?.steps.at(-1) ?? "Claude needs an answer.";
-      clear(row);
-      row.append(h("div", { class: "sub", text: "Answer in your terminal — Coucou can't reply for you yet." }));
+      who.append(agentWho(State.focusTask, t("question.who")));
+
+      const key = q && current ? `${q.requestId}:${q.index}` : "readonly";
+      if (key !== builtKey) rebuild(key);
+
+      if (!q || !current) {
+        meta.style.display = "none";
+        grid.style.display = "none";
+        field.style.display = "none";
+        title.textContent = State.focusTask?.steps.at(-1) ?? t("question.fallback");
+        return;
+      }
+
+      const bits = [current.header, q.questions.length > 1
+        ? t("question.progress", { n: String(q.index + 1), total: String(q.questions.length) })
+        : "", current.multiSelect ? t("question.multiHint") : ""].filter(Boolean);
+      meta.textContent = bits.join(" · ");
+      meta.style.display = bits.length ? "" : "none";
+      title.textContent = current.question;
+      title.title = current.question;
+
+      grid.style.display = q.typing ? "none" : "";
+      field.style.display = q.typing ? "" : "none";
+      if (!q.typing) input.value = q.custom[q.index] ?? "";
+
+      const picked = q.picked[q.index];
+      options.forEach((b, i) => b.classList.toggle("on", picked.includes(i)));
+      if (next) next.disabled = picked.length === 0 && q.custom[q.index] == null;
+    },
+    focus() {
+      input.focus();
+      input.select();
     },
   };
 }
@@ -341,11 +462,11 @@ function buildQuestion(): ViewHost {
 
 function buildError(actions: ViewActions): ViewHost {
   const who = h("div");
-  const title = h("div", { class: "title", text: "Workflow stopped." });
+  const title = h("div", { class: "title", text: t("error.workflowStopped") });
   const detail = h("div", { class: "detail" });
   const row = h("div", { class: "actions" },
-    btn("Retry", "primary", () => actions.setView(State.defaultView())),
-    btn("Open in n8n", "secondary", () => actions.openUrl("")),
+    btn(t("error.retry"), "primary", () => actions.setView(State.defaultView())),
+    btn(t("error.openN8n"), "secondary", () => actions.openUrl("")),
   );
   const el = h("div", { class: "view" }, card("red", stack(116, 16, who, title, detail, row)));
   return {
@@ -354,8 +475,8 @@ function buildError(actions: ViewActions): ViewHost {
       const task = State.focusTask;
       clear(who);
       who.append(agentWho(task, task?.source === "n8n" ? "n8n" : "Claude Code"));
-      title.textContent = task?.source === "n8n" ? "Workflow stopped." : "Session stopped on an error.";
-      detail.textContent = task?.steps.at(-1) ?? "No detail available.";
+      title.textContent = task?.source === "n8n" ? t("error.workflowStopped") : t("error.sessionStopped");
+      detail.textContent = task?.steps.at(-1) ?? t("error.noDetail");
     },
   };
 }
@@ -366,16 +487,16 @@ function buildFinished(actions: ViewActions): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title" });
   const row = h("div", { class: "actions" },
-    btn("Open terminal", "primary", () => actions.openTerminal()),
-    btn("OK", "secondary", () => actions.collapse()),
+    btn(t("finished.openTerminal"), "primary", () => actions.openTerminal()),
+    btn(t("finished.ok"), "secondary", () => actions.collapse()),
   );
   const el = h("div", { class: "view" }, card("green", stack(116, 16, who, title, row)));
   return {
     el,
     sync() {
       clear(who);
-      who.append(agentWho(State.focusTask, "Claude Code finished"));
-      title.textContent = State.focusTask?.steps.at(-1) ?? "Session finished";
+      who.append(agentWho(State.focusTask, t("finished.who")));
+      title.textContent = State.focusTask?.steps.at(-1) ?? t("finished.fallback");
     },
   };
 }
@@ -386,8 +507,8 @@ function buildConfused(): ViewHost {
   const body = h(
     "div",
     { class: "stack", style: "padding:0 18px 0 128px" },
-    h("div", { class: "title", text: "Too many hits at once." }),
-    h("div", { class: "sub", text: "Give me a sec — back to work in three seconds." }),
+    h("div", { class: "title", text: t("confused.title") }),
+    h("div", { class: "sub", text: t("confused.sub") }),
   );
   return { el: h("div", { class: "view" }, card("pink", body)), sync() {} };
 }
@@ -423,7 +544,7 @@ function buildSettings(actions: ViewActions): ViewHost {
   const rows = h(
     "div",
     { class: "settings-rows" },
-    h("div", { class: "settings-row" }, soundSwitch, h("span", { text: "Sound" }), volume),
+    h("div", { class: "settings-row" }, soundSwitch, h("span", { text: t("islandSettings.sound") }), volume),
     h(
       "div",
       { class: "settings-row" },
@@ -440,7 +561,7 @@ function buildSettings(actions: ViewActions): ViewHost {
       h("button", {
         class: "link-btn",
         style: "color:#8e939c;font-size:11.5px",
-        text: "Settings…",
+        text: t("islandSettings.more"),
         onclick: () => actions.openSettingsWindow(),
       }),
     ),
@@ -456,7 +577,7 @@ function buildSettings(actions: ViewActions): ViewHost {
       soundSwitch.classList.toggle("on", s.soundEnabled);
       volume.value = String(s.soundVolume);
       volume.style.opacity = s.soundEnabled ? "1" : "0.4";
-      autoLabel.textContent = `Auto-close · ${Math.round(s.autoCloseInterval)}s`;
+      autoLabel.textContent = t("islandSettings.autoClose", { s: Math.round(s.autoCloseInterval) });
       segButtons.forEach((b, i) => b.classList.toggle("on", s.autoCloseInterval === [10, 15, 30][i]));
       clear(claudeBadge);
       claudeBadge.append(
@@ -471,14 +592,22 @@ function buildSettings(actions: ViewActions): ViewHost {
 
 // ── Placeholders filled in later stages ───────────────────────────────────────
 
-function buildPlaceholder(title: string, sub: string): ViewHost {
+function buildPlaceholder(title: string | (() => string), sub: string): ViewHost {
+  const titleEl = h("div", { class: "title", text: typeof title === "string" ? title : title() });
   const body = h(
     "div",
     { class: "stack", style: "padding:0 18px 0 118px" },
-    h("div", { class: "title", text: title }),
+    titleEl,
     h("div", { class: "sub", text: sub }),
   );
-  return { el: h("div", { class: "view" }, card(null, body)), sync() {} };
+  return {
+    el: h("div", { class: "view" }, card(null, body)),
+    sync() {
+      if (typeof title === "string") return;
+      const text = title();
+      if (titleEl.textContent !== text) titleEl.textContent = text;
+    },
+  };
 }
 
 // ── Registry ──────────────────────────────────────────────────────────────────
@@ -491,7 +620,7 @@ export function buildViews(
   map.set("overview", buildOverview(actions));
   map.set("empty", buildEmpty(actions));
   map.set("approval", buildApproval(actions));
-  map.set("question", buildQuestion());
+  map.set("question", buildQuestion(actions));
   map.set("error", buildError(actions));
   map.set("finished", buildFinished(actions));
   map.set("confused", buildConfused());
@@ -502,8 +631,10 @@ export function buildViews(
   map.set("uploading", buildUploading());
   map.set("choose", buildChoose(actions));
   // Not in the Windows v1: sending a file by email, window attach + web result.
-  map.set("mail", buildPlaceholder("Sending by email isn't in this version.", ""));
-  map.set("searching", buildPlaceholder("Claude is searching…", ""));
-  map.set("result", buildPlaceholder("Result", ""));
+  map.set("mail", buildPlaceholder(t("placeholder.mail"), ""));
+  map.set("searching", buildPlaceholder(
+    () => t("placeholder.searching", { provider: providerLabel(State.settings.chatProvider) }), "",
+  ));
+  map.set("result", buildPlaceholder(t("placeholder.result"), ""));
   return map;
 }
