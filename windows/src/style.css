@@ -789,6 +789,27 @@ input[type="range"]::-webkit-slider-thumb {
   transform: scale(1);
 }
 
+.chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-right: -5px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+  transition: background 0.15s ease-out, color 0.15s ease-out;
+}
+
+.chip-remove:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--ink);
+}
+
 .chip-dot {
   width: 7px;
   height: 7px;

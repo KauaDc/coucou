@@ -30,8 +30,13 @@ function typingDots(): HTMLElement {
 }
 
 /** The coloured chip showing what the question is about (a dropped file). */
-function contextChip(label: string): HTMLElement {
-  const chip = h("div", { class: "chip" }, h("i", { class: "chip-dot" }), h("span", { text: label }));
+function contextChip(label: string, onRemove: () => void): HTMLElement {
+  const remove = h(
+    "button",
+    { class: "chip-remove", title: "Remove file", onclick: onRemove },
+    svg(ICONS.xmark, 8),
+  );
+  const chip = h("div", { class: "chip" }, h("i", { class: "chip-dot" }), h("span", { text: label }), remove);
   requestAnimationFrame(() => chip.classList.add("settled"));
   return chip;
 }
@@ -92,6 +97,24 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     }
   }
 
+  /**
+   * The × on the chip. The file rides along with the first message, so once the
+   * conversation has started the model already has it: the conversation starts
+   * over too, or "removed" would not mean much.
+   */
+  function removeFile() {
+    if (sending) return;
+    State.droppedFile = null;
+    State.promptContext = null;
+    if (State.chatHistory.length > 0) {
+      State.chatHistory = [];
+      void Bridge.chatReset();
+    }
+    State.notify();
+    onHeightChange();
+    input.focus();
+  }
+
   send.addEventListener("click", () => void submit());
   input.addEventListener("keydown", (e) => {
     if ((e as KeyboardEvent).key === "Enter") {
@@ -109,7 +132,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       if (chipRow.dataset.label !== wantChip) {
         chipRow.dataset.label = wantChip;
         clear(chipRow);
-        if (wantChip) chipRow.append(contextChip(wantChip));
+        if (wantChip) chipRow.append(contextChip(wantChip, removeFile));
       }
 
       const thinking = State.stateOverride === "thinking";
