@@ -199,11 +199,11 @@ export class Island {
         void Bridge.approvalDecision(req.requestId, d);
         this.closeApproval();
       },
-      answer: (answers) => {
+      answer: (answers, other) => {
         const req = State.pendingApproval;
         if (!req) return;
         Sound.play("approve");
-        void Bridge.approvalAnswer(req.requestId, answers);
+        void Bridge.approvalAnswer(req.requestId, answers, other);
         this.closeApproval();
       },
       answerInTerminal: () => {
