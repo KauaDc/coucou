@@ -95,6 +95,8 @@ export class Island {
   private confusedRecovery: number | null = null;
   private prevViewBeforeConfused: IslandViewName = "overview";
   private lastSyncedView: IslandViewName | null = null;
+  /** A view other than the chat has the keyboard for its text field. */
+  private fieldKeyboard = false;
 
   /** The launch greeting ended, or the island came out of hidden — two of the
    *  moments the Monday recap may open (see src/recap/recap.ts). */
@@ -1119,6 +1121,17 @@ export class Island {
       } else if (wasChat) {
         void Bridge.focusWindow(false);
       }
+    }
+    // A question's "Other…" field takes it the same way while it is open, and
+    // gives it back once it is sent, left, or the card goes.
+    const field =
+      State.mode === "expanded" &&
+      State.view !== "prompt" &&
+      (this.views.get(State.view)?.wantsKeyboard?.() ?? false);
+    if (field !== this.fieldKeyboard) {
+      this.fieldKeyboard = field;
+      void Bridge.focusWindow(field);
+      if (field) window.setTimeout(() => this.views.get(State.view)?.focus?.(), 120);
     }
 
     // Compact mini grid

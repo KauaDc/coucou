@@ -59,6 +59,8 @@ export interface ViewHost {
   sync(): void;
   /** Called when the view becomes active, for views with a text field. */
   focus?(): void;
+  /** True while the view shows a text field that needs the keyboard (the chat always does). */
+  wantsKeyboard?(): boolean;
   /** Called every frame while the view is on screen. True = needs another frame. */
   tick?(nowMs: number): boolean | void;
 }
@@ -571,6 +573,12 @@ function buildQuestion(actions: ViewActions): ViewHost {
 
   return {
     el,
+    // The island window does not take the keyboard on a click (Windows), so
+    // the "Other…" field asks for it while it is open.
+    wantsKeyboard: () => typing && !!State.pendingApproval?.questions,
+    focus: () => {
+      if (typing) field.focus();
+    },
     sync() {
       const questions = State.pendingApproval?.questions;
       clear(who);
